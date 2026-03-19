@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/url"
 	"os"
+	"path/filepath"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
@@ -112,6 +113,12 @@ func NewBrowser(headless bool, options ...Option) *Browser {
 }
 
 func newBrowserWithProfile(headless bool, cfg *browserConfig) *Browser {
+	// 清理残留的 SingletonLock，防止上次 Chrome 异常退出后锁文件未释放
+	lockFile := filepath.Join(cfg.profileDir, "SingletonLock")
+	if err := os.Remove(lockFile); err == nil {
+		logrus.Info("profile mode: 已清理残留的 SingletonLock")
+	}
+
 	l := launcher.New().
 		Headless(headless).
 		UserDataDir(cfg.profileDir).
@@ -139,7 +146,8 @@ func newBrowserWithProfile(headless bool, cfg *browserConfig) *Browser {
 	return &Browser{rod: b, launcher: l}
 }
 
-// injectCookiesFromFile 将 cookies.json 中的 cookie 注入到浏览器实例中。
+// injectCookiesFromFile 通过临时 page 将 cookies.json 注入浏览器。
+// Network.setCookies 是 page-level CDP 方法，不能在 browser target 上调用。
 func injectCookiesFromFile(b *rod.Browser) {
 	cookiePath := cookies.GetCookiesFilePath()
 	cookieLoader := cookies.NewLoadCookie(cookiePath)
@@ -156,9 +164,21 @@ func injectCookiesFromFile(b *rod.Browser) {
 		return
 	}
 
-	params := proto.CookiesToParams(cks)
-	setCookies := proto.NetworkSetCookies{Cookies: params}
-	if err := setCookies.Call(b); err != nil {
+	// 用 browser.SetCookies 替代 Network.setCookies，可在 browser target 上调用
+	var rodCookies []*proto.NetworkCookieParam
+	for _, ck := range cks {
+		rodCookies = append(rodCookies, &proto.NetworkCookieParam{
+			Name:     ck.Name,
+			Value:    ck.Value,
+			Domain:   ck.Domain,
+			Path:     ck.Path,
+			Secure:   ck.Secure,
+			HTTPOnly: ck.HTTPOnly,
+			SameSite: ck.SameSite,
+			Expires:  ck.Expires,
+		})
+	}
+	if err := b.SetCookies(rodCookies); err != nil {
 		logrus.Warnf("profile mode: 注入 cookies 失败: %v", err)
 		return
 	}

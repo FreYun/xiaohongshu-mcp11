@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -131,15 +132,68 @@ func (p *PublishLongformAction) PublishLongform(ctx context.Context, content Pub
 	}
 	humanSleep(1 * time.Second)
 
-	// 7.5 输入话题标签（与图文发布共用 inputTags）
+	// 7.5 输入话题标签（参考文字配图流程：找 textbox → JS 光标定位末尾 → 回车 → 逐个 inputTag）
 	if len(content.Tags) > 0 {
-		contentElem, ok := getContentElement(page)
-		if !ok {
+		tagSelectors := []string{
+			`div[contenteditable="true"][role="textbox"]`,
+			`div.ql-editor`,
+			`div[contenteditable="true"]`,
+		}
+		var tagElem *rod.Element
+		for _, sel := range tagSelectors {
+			els, err := page.Elements(sel)
+			if err != nil || len(els) == 0 {
+				continue
+			}
+			// 取最后一个可见的 contenteditable 元素
+			el := els[len(els)-1]
+			if visible, _ := el.Visible(); !visible {
+				continue
+			}
+			tagElem = el
+			break
+		}
+		if tagElem == nil {
 			logrus.Warn("长文发布页未找到内容编辑器，跳过标签输入")
 		} else {
-			if err := inputTags(contentElem, content.Tags); err != nil {
-				logrus.Warnf("长文输入标签失败: %v", err)
-			} else {
+			// 每个 tag 前都重新聚焦并定位光标到末尾（点击联想后元素会失焦）
+			focusCursorToEnd := func() {
+				_ = tagElem.Click(proto.InputMouseButtonLeft, 1)
+				humanSleep(300 * time.Millisecond)
+				_, _ = page.Eval(`() => {
+					const sel = window.getSelection();
+					const el = document.querySelector('[contenteditable="true"][role="textbox"]') || document.querySelector('[contenteditable="true"]');
+					if (el) {
+						const range = document.createRange();
+						range.selectNodeContents(el);
+						range.collapse(false);
+						sel.removeAllRanges();
+						sel.addRange(range);
+					}
+				}`)
+				humanSleep(200 * time.Millisecond)
+			}
+
+			// 首次聚焦并回车换行
+			focusCursorToEnd()
+			if ka, err := tagElem.KeyActions(); err == nil {
+				_ = ka.Press(input.Enter).Do()
+			}
+			humanSleep(300 * time.Millisecond)
+
+			// 逐个输入标签，每个 tag 前重新聚焦
+			allOK := true
+			for i, tag := range content.Tags {
+				if i > 0 {
+					focusCursorToEnd()
+				}
+				tag = strings.TrimLeft(tag, "#")
+				if err := inputTag(tagElem, tag); err != nil {
+					logrus.Warnf("长文输入标签 [%s] 失败: %v", tag, err)
+					allOK = false
+				}
+			}
+			if allOK {
 				slog.Info("长文标签输入完成", "tags", content.Tags)
 			}
 		}
@@ -300,12 +354,16 @@ func inputLongformBody(page *rod.Page, content string) error {
 	}
 	humanSleep(500 * time.Millisecond)
 
-	// 通过 Eval 传参避免换行符等导致终端/JS 字符串错误；正文按行插入并插入换行
+	// 按段落（\n\n）拆分，段落间用 insertParagraph；段落内按行（\n）用 insertLineBreak
 	_, err := page.Eval(`(content) => {
-		const lines = (content || '').split('\n');
-		for (let i = 0; i < lines.length; i++) {
-			document.execCommand('insertText', false, lines[i]);
-			if (i < lines.length - 1) document.execCommand('insertLineBreak');
+		const paragraphs = (content || '').split('\n\n');
+		for (let p = 0; p < paragraphs.length; p++) {
+			if (p > 0) document.execCommand('insertParagraph');
+			const lines = paragraphs[p].split('\n');
+			for (let i = 0; i < lines.length; i++) {
+				document.execCommand('insertText', false, lines[i]);
+				if (i < lines.length - 1) document.execCommand('insertLineBreak');
+			}
 		}
 	}`, content)
 	if err != nil {
