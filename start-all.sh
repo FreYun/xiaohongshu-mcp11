@@ -14,7 +14,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN="${SCRIPT_DIR}/xiaohongshu-mcp"
 BROWSER_BASE="/home/rooot/.openclaw/browser"
 LOG_DIR="/tmp"
-HEADLESS="${1:---headless=false}"
+HEADLESS="${1:---headless=true}"
 COMPLIANCE_BIN="/home/rooot/MCP/compliance-mcp/compliance-mcp"
 
 # 启动 compliance-mcp（合规审核服务，端口 18090）

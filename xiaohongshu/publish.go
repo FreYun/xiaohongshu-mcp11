@@ -492,13 +492,13 @@ func inputTag(contentElem *rod.Element, tag string) error {
 	time.Sleep(1 * time.Second)
 
 	page := contentElem.Page()
-	topicContainer, err := page.Element("#creator-editor-topic-container")
+	topicContainer, err := page.Timeout(5 * time.Second).Element("#creator-editor-topic-container")
 	if err != nil || topicContainer == nil {
 		slog.Warn("未找到标签联想下拉框，直接输入空格", "tag", tag)
 		return contentElem.Input(" ")
 	}
 
-	firstItem, err := topicContainer.Element(".item")
+	firstItem, err := topicContainer.Timeout(3 * time.Second).Element(".item")
 	if err != nil || firstItem == nil {
 		slog.Warn("未找到标签联想选项，直接输入空格", "tag", tag)
 		return contentElem.Input(" ")
