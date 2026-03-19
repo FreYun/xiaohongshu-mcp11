@@ -25,8 +25,8 @@ type PublishContentArgs struct {
 	Title       string   `json:"title" jsonschema:"内容标题（小红书限制：最多20个中文字或英文单词）"`
 	Content     string   `json:"content" jsonschema:"正文内容（图片模式为正文，文字配图模式为图下正文）"`
 	Images      []string `json:"images,omitempty" jsonschema:"图片路径列表（图片模式必填）。支持 HTTP/HTTPS 链接或本地绝对路径"`
-	TextToImage bool     `json:"text_to_image,omitempty" jsonschema:"文字配图模式开关，设为 true 则根据 text_content 自动生成卡片图片发布"`
-	TextContent string   `json:"text_content,omitempty" jsonschema:"文字配图模式：卡片文字内容，空行分隔多张卡片（最多3张）"`
+	TextToImage bool     `json:"text_to_image,omitempty" jsonschema:"文字配图模式开关，设为 true 则根据 text_image 自动生成卡片图片发布"`
+	TextImage   string   `json:"text_image,omitempty" jsonschema:"文字配图模式：卡片文字内容，空行分隔多张卡片（最多3张）"`
 	ImageStyle  string   `json:"image_style,omitempty" jsonschema:"文字配图模式：卡片样式，支持 基础(默认)、插图、光影、弥散、涂写、手写、备忘、便签、边框"`
 	Tags        []string `json:"tags,omitempty" jsonschema:"话题标签列表（可选参数），如 [美食, 旅行, 生活]"`
 	ScheduleAt  string   `json:"schedule_at,omitempty" jsonschema:"定时发布时间（可选），ISO8601格式"`
@@ -253,7 +253,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 					ScheduleAt: args.ScheduleAt,
 					IsOriginal: args.IsOriginal,
 					Visibility: args.Visibility,
-				}, args.TextContent)
+				}, args.TextImage)
 			} else {
 				// 图片上传模式
 				argsMap := map[string]interface{}{

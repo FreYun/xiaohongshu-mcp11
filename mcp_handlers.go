@@ -913,7 +913,7 @@ func (s *AppServer) handlePublishTextToImage(ctx context.Context, args publishTe
 	}
 	if len(textCards) == 0 {
 		return &MCPToolResult{
-			Content: []MCPContent{{Type: "text", Text: "文字配图发布失败: text_content 不能为空"}},
+			Content: []MCPContent{{Type: "text", Text: "文字配图发布失败: text_image 不能为空"}},
 			IsError: true,
 		}
 	}
