@@ -2,10 +2,14 @@ package main
 
 import (
 	"flag"
+	"fmt"
 	"os"
+	"strconv"
+	"strings"
 
 	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/configs"
+	"github.com/xpzouying/xiaohongshu-mcp/cookies"
 )
 
 func main() {
@@ -28,6 +32,15 @@ func main() {
 	configs.InitHeadless(headless)
 	configs.SetBinPath(binPath)
 	configs.SetProfileDir(profileDir)
+
+	// 根据端口号设置独立的 cookie 文件，避免多 bot 共享同一 session
+	portNum, _ := strconv.Atoi(strings.TrimPrefix(port, ":"))
+	if portNum >= 18061 && portNum <= 18070 {
+		botID := fmt.Sprintf("bot%d", portNum-18060)
+		cookiePath := fmt.Sprintf("cookies-%s.json", botID)
+		cookies.SetCookiesFilePath(cookiePath)
+		logrus.Infof("cookie 文件: %s", cookiePath)
+	}
 
 	// 初始化服务
 	xiaohongshuService := NewXiaohongshuService()
