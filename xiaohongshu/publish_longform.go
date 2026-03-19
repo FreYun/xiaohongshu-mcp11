@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/input"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -156,13 +155,12 @@ func (p *PublishLongformAction) PublishLongform(ctx context.Context, content Pub
 		if tagElem == nil {
 			logrus.Warn("长文发布页未找到内容编辑器，跳过标签输入")
 		} else {
-			// 每个 tag 前都重新聚焦并定位光标到末尾（点击联想后元素会失焦）
+			// 全部用 JS 输入标签，避免 rod 元素引用失效
 			focusCursorToEnd := func() {
-				_ = tagElem.Click(proto.InputMouseButtonLeft, 1)
-				humanSleep(300 * time.Millisecond)
 				_, _ = page.Eval(`() => {
+					const el = document.querySelector('[contenteditable="true"][role="textbox"]') || document.querySelector('div.ql-editor') || document.querySelector('[contenteditable="true"]');
+					if (el) { el.focus(); }
 					const sel = window.getSelection();
-					const el = document.querySelector('[contenteditable="true"][role="textbox"]') || document.querySelector('[contenteditable="true"]');
 					if (el) {
 						const range = document.createRange();
 						range.selectNodeContents(el);
@@ -171,27 +169,46 @@ func (p *PublishLongformAction) PublishLongform(ctx context.Context, content Pub
 						sel.addRange(range);
 					}
 				}`)
-				humanSleep(200 * time.Millisecond)
+				humanSleep(300 * time.Millisecond)
 			}
 
 			// 首次聚焦并回车换行
 			focusCursorToEnd()
-			if ka, err := tagElem.KeyActions(); err == nil {
-				_ = ka.Press(input.Enter).Do()
-			}
+			_, _ = page.Eval(`() => { document.execCommand('insertLineBreak'); }`)
 			humanSleep(300 * time.Millisecond)
 
-			// 逐个输入标签，每个 tag 前重新聚焦
+			// 逐个输入标签
 			allOK := true
-			for i, tag := range content.Tags {
-				if i > 0 {
-					focusCursorToEnd()
-				}
+			for _, tag := range content.Tags {
 				tag = strings.TrimLeft(tag, "#")
-				if err := inputTag(tagElem, tag); err != nil {
-					logrus.Warnf("长文输入标签 [%s] 失败: %v", tag, err)
-					allOK = false
+				// 聚焦 + 光标到末尾
+				focusCursorToEnd()
+				// 用 JS execCommand 输入 # 和标签文字
+				_, _ = page.Eval(`() => { document.execCommand('insertText', false, '#'); }`)
+				humanSleep(200 * time.Millisecond)
+				for _, ch := range tag {
+					_, _ = page.Eval(`(c) => { document.execCommand('insertText', false, c); }`, string(ch))
+					humanSleep(50 * time.Millisecond)
 				}
+				humanSleep(1 * time.Second)
+				// 点击标签联想选项
+				topicContainer, err := page.Timeout(5 * time.Second).Element("#creator-editor-topic-container")
+				if err == nil && topicContainer != nil {
+					firstItem, err := topicContainer.Element(".item")
+					if err == nil && firstItem != nil {
+						if err := firstItem.Click(proto.InputMouseButtonLeft, 1); err == nil {
+							slog.Info("长文标签联想点击成功", "tag", tag)
+						}
+					} else {
+						// 没有联想，输入空格结束
+						_, _ = page.Eval(`() => { document.execCommand('insertText', false, ' '); }`)
+						slog.Warn("长文标签无联想，已空格结束", "tag", tag)
+					}
+				} else {
+					_, _ = page.Eval(`() => { document.execCommand('insertText', false, ' '); }`)
+					slog.Warn("长文标签无联想容器，已空格结束", "tag", tag)
+				}
+				humanSleep(500 * time.Millisecond)
 			}
 			if allOK {
 				slog.Info("长文标签输入完成", "tags", content.Tags)
