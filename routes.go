@@ -2,10 +2,27 @@ package main
 
 import (
 	"net/http"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+	"github.com/sirupsen/logrus"
 )
+
+// extractBotIDFromPath 从 URL path 提取 botID。
+// "/mcp/bot7" → "bot7", "/mcp/bot7/xxx" → "bot7", "/mcp" → ""
+func extractBotIDFromPath(path string) string {
+	// 去掉 "/mcp/" 前缀
+	path = strings.TrimPrefix(path, "/mcp/")
+	if path == "" || path == "mcp" {
+		return ""
+	}
+	// 取第一段（botID 后面可能还有 session path 等）
+	if idx := strings.Index(path, "/"); idx >= 0 {
+		path = path[:idx]
+	}
+	return path
+}
 
 // setupRoutes 设置路由配置
 func setupRoutes(appServer *AppServer) *gin.Engine {
@@ -23,19 +40,28 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 	// 健康检查
 	router.GET("/health", healthHandler)
 
-	// MCP 端点 - 使用官方 SDK 的 Streamable HTTP Handler
+	// MCP 端点 — 单进程多租户，从 URL path 提取 botID
 	mcpHandler := mcp.NewStreamableHTTPHandler(
 		func(r *http.Request) *mcp.Server {
-			return appServer.mcpServer
+			botID := extractBotIDFromPath(r.URL.Path)
+			if botID == "" {
+				logrus.Debug("MCP request: using default server (no botID)")
+				return appServer.defaultMcpServer
+			}
+			logrus.Debugf("MCP request: routing to bot %s", botID)
+			return appServer.getOrCreateBotMCPServer(botID)
 		},
 		&mcp.StreamableHTTPOptions{
-			JSONResponse: true, // 支持 JSON 响应
+			JSONResponse: true,
 		},
 	)
+	// /mcp — fallback（兼容旧的无 botID 请求）
 	router.Any("/mcp", gin.WrapH(mcpHandler))
+	// /mcp/:botID — 多租户路由（如 /mcp/bot7）
+	// /mcp/:botID/* — 处理 MCP session 子路径
 	router.Any("/mcp/*path", gin.WrapH(mcpHandler))
 
-	// API 路由组
+	// API 路由组（暂不改，保持兼容）
 	api := router.Group("/api/v1")
 	{
 		api.GET("/login/status", appServer.checkLoginStatusHandler)

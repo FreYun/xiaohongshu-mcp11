@@ -21,8 +21,7 @@ const qrMediaDir = "/home/rooot/.openclaw/media"
 
 // saveQrImage 保存 QR 图片到 openclaw media 目录，供 bot 通过文件路径发送给用户。
 // prefix: "xhs-qr" (主站) 或 "xhs-creator-qr" (创作者平台)
-func (s *AppServer) saveQrImage(base64Data, prefix string) {
-	botID := s.getBotID()
+func (s *AppServer) saveQrImage(base64Data, prefix, botID string) {
 	if botID == "" {
 		return
 	}
@@ -57,10 +56,10 @@ func parseVisibility(args map[string]interface{}) string {
 }
 
 // handleCheckLoginStatus 处理检查登录状态（单个 browser 实例同时检查主站 + 创作者平台）
-func (s *AppServer) handleCheckLoginStatus(ctx context.Context) *MCPToolResult {
-	logrus.Info("MCP: 检查登录状态")
+func (s *AppServer) handleCheckLoginStatus(ctx context.Context, botID string) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 检查登录状态", botID)
 
-	mainOK, creatorOK := s.xiaohongshuService.CheckBothLoginStatus(ctx)
+	mainOK, creatorOK := s.xiaohongshuService.CheckBothLoginStatus(ctx, botID)
 
 	mainIcon := "❌ 未登录"
 	if mainOK {
@@ -92,10 +91,10 @@ func (s *AppServer) handleCheckLoginStatus(ctx context.Context) *MCPToolResult {
 // handleGetLoginQrcode 处理获取登录二维码请求。
 // 返回二维码图片的 Base64 编码和超时时间，供前端展示扫码登录。
 // notifySession：可选，扫码成功后通过该 session key 回传通知。
-func (s *AppServer) handleGetLoginQrcode(ctx context.Context, notifySession string) *MCPToolResult {
-	logrus.Info("MCP: 获取登录扫码图片")
+func (s *AppServer) handleGetLoginQrcode(ctx context.Context, botID string, notifySession string) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 获取登录扫码图片", botID)
 
-	result, err := s.xiaohongshuService.GetLoginQrcode(ctx, notifySession)
+	result, err := s.xiaohongshuService.GetLoginQrcode(ctx, botID, notifySession)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{Type: "text", Text: "获取登录扫码图片失败: " + err.Error()}},
@@ -121,7 +120,7 @@ func (s *AppServer) handleGetLoginQrcode(ctx context.Context, notifySession stri
 	base64Data := strings.TrimPrefix(result.Img, "data:image/png;base64,")
 
 	// 保存 QR 图片到 media 目录，供 bot 通过文件路径发送
-	s.saveQrImage(base64Data, "xhs-qr")
+	s.saveQrImage(base64Data, "xhs-qr", botID)
 
 	contents := []MCPContent{
 		{Type: "text", Text: "请用小红书 App 在 " + deadline + " 前扫码登录 👇"},
@@ -135,10 +134,10 @@ func (s *AppServer) handleGetLoginQrcode(ctx context.Context, notifySession stri
 }
 
 // handleDeleteCookies 处理删除 cookies 请求，用于登录重置
-func (s *AppServer) handleDeleteCookies(ctx context.Context) *MCPToolResult {
-	logrus.Info("MCP: 删除 cookies，重置登录状态")
+func (s *AppServer) handleDeleteCookies(ctx context.Context, botID string) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 删除 cookies，重置登录状态", botID)
 
-	err := s.xiaohongshuService.DeleteCookies(ctx)
+	err := s.xiaohongshuService.DeleteCookies(ctx, botID)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{Type: "text", Text: "删除 cookies 失败: " + err.Error()}},
@@ -146,7 +145,7 @@ func (s *AppServer) handleDeleteCookies(ctx context.Context) *MCPToolResult {
 		}
 	}
 
-	cookiePath := cookies.GetCookiesFilePath()
+	cookiePath := cookies.GetCookiesFilePathForBot(botID)
 	resultText := fmt.Sprintf("Cookies 已成功删除，登录状态已重置。\n\n删除的文件路径: %s\n\n下次操作时，需要重新登录。", cookiePath)
 	return &MCPToolResult{
 		Content: []MCPContent{{
@@ -157,8 +156,8 @@ func (s *AppServer) handleDeleteCookies(ctx context.Context) *MCPToolResult {
 }
 
 // handlePublishContent 处理发布内容
-func (s *AppServer) handlePublishContent(ctx context.Context, args map[string]interface{}) *MCPToolResult {
-	logrus.Info("MCP: 发布内容")
+func (s *AppServer) handlePublishContent(ctx context.Context, botID string, args map[string]interface{}) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 发布内容", botID)
 
 	// 解析参数
 	title, _ := args["title"].(string)
@@ -210,7 +209,7 @@ func (s *AppServer) handlePublishContent(ctx context.Context, args map[string]in
 	}
 
 	// 执行发布
-	result, err := s.xiaohongshuService.PublishContent(ctx, req)
+	result, err := s.xiaohongshuService.PublishContent(ctx, botID, req)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -231,8 +230,8 @@ func (s *AppServer) handlePublishContent(ctx context.Context, args map[string]in
 }
 
 // handlePublishVideo 处理发布视频内容（仅本地单个视频文件）
-func (s *AppServer) handlePublishVideo(ctx context.Context, args map[string]interface{}) *MCPToolResult {
-	logrus.Info("MCP: 发布视频内容（本地）")
+func (s *AppServer) handlePublishVideo(ctx context.Context, botID string, args map[string]interface{}) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 发布视频内容（本地）", botID)
 
 	title, _ := args["title"].(string)
 	content, _ := args["content"].(string)
@@ -282,7 +281,7 @@ func (s *AppServer) handlePublishVideo(ctx context.Context, args map[string]inte
 	}
 
 	// 执行发布
-	result, err := s.xiaohongshuService.PublishVideo(ctx, req)
+	result, err := s.xiaohongshuService.PublishVideo(ctx, botID, req)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -303,10 +302,10 @@ func (s *AppServer) handlePublishVideo(ctx context.Context, args map[string]inte
 }
 
 // handleListFeeds 处理获取Feeds列表
-func (s *AppServer) handleListFeeds(ctx context.Context) *MCPToolResult {
-	logrus.Info("MCP: 获取Feeds列表")
+func (s *AppServer) handleListFeeds(ctx context.Context, botID string) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 获取Feeds列表", botID)
 
-	result, err := s.xiaohongshuService.ListFeeds(ctx)
+	result, err := s.xiaohongshuService.ListFeeds(ctx, botID)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -338,8 +337,8 @@ func (s *AppServer) handleListFeeds(ctx context.Context) *MCPToolResult {
 }
 
 // handleSearchFeeds 处理搜索Feeds
-func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs) *MCPToolResult {
-	logrus.Info("MCP: 搜索Feeds")
+func (s *AppServer) handleSearchFeeds(ctx context.Context, botID string, args SearchFeedsArgs) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 搜索Feeds", botID)
 
 	if args.Keyword == "" {
 		return &MCPToolResult{
@@ -362,7 +361,7 @@ func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs)
 		Location:    args.Filters.Location,
 	}
 
-	result, err := s.xiaohongshuService.SearchFeeds(ctx, args.Keyword, filter)
+	result, err := s.xiaohongshuService.SearchFeeds(ctx, botID, args.Keyword, filter)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -394,8 +393,8 @@ func (s *AppServer) handleSearchFeeds(ctx context.Context, args SearchFeedsArgs)
 }
 
 // handleGetFeedDetail 处理获取Feed详情
-func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any) *MCPToolResult {
-	logrus.Info("MCP: 获取Feed详情")
+func (s *AppServer) handleGetFeedDetail(ctx context.Context, botID string, args map[string]any) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 获取Feed详情", botID)
 
 	// 解析参数
 	feedID, ok := args["feed_id"].(string)
@@ -480,7 +479,7 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 
 	logrus.Infof("MCP: 获取Feed详情 - Feed ID: %s, loadAllComments=%v, config=%+v", feedID, loadAll, config)
 
-	result, err := s.xiaohongshuService.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAll, config)
+	result, err := s.xiaohongshuService.GetFeedDetailWithConfig(ctx, botID, feedID, xsecToken, loadAll, config)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -512,8 +511,8 @@ func (s *AppServer) handleGetFeedDetail(ctx context.Context, args map[string]any
 }
 
 // handleUserProfile 获取用户主页
-func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) *MCPToolResult {
-	logrus.Info("MCP: 获取用户主页")
+func (s *AppServer) handleUserProfile(ctx context.Context, botID string, args map[string]any) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 获取用户主页", botID)
 
 	// 解析参数
 	userID, ok := args["user_id"].(string)
@@ -540,7 +539,7 @@ func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) 
 
 	logrus.Infof("MCP: 获取用户主页 - User ID: %s", userID)
 
-	result, err := s.xiaohongshuService.UserProfile(ctx, userID, xsecToken)
+	result, err := s.xiaohongshuService.UserProfile(ctx, botID, userID, xsecToken)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -572,7 +571,7 @@ func (s *AppServer) handleUserProfile(ctx context.Context, args map[string]any) 
 }
 
 // handleLikeFeed 处理点赞/取消点赞
-func (s *AppServer) handleLikeFeed(ctx context.Context, args map[string]interface{}) *MCPToolResult {
+func (s *AppServer) handleLikeFeed(ctx context.Context, botID string, args map[string]interface{}) *MCPToolResult {
 	feedID, ok := args["feed_id"].(string)
 	if !ok || feedID == "" {
 		return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: "操作失败: 缺少feed_id参数"}}, IsError: true}
@@ -587,9 +586,9 @@ func (s *AppServer) handleLikeFeed(ctx context.Context, args map[string]interfac
 	var err error
 
 	if unlike {
-		res, err = s.xiaohongshuService.UnlikeFeed(ctx, feedID, xsecToken)
+		res, err = s.xiaohongshuService.UnlikeFeed(ctx, botID, feedID, xsecToken)
 	} else {
-		res, err = s.xiaohongshuService.LikeFeed(ctx, feedID, xsecToken)
+		res, err = s.xiaohongshuService.LikeFeed(ctx, botID, feedID, xsecToken)
 	}
 
 	if err != nil {
@@ -608,7 +607,7 @@ func (s *AppServer) handleLikeFeed(ctx context.Context, args map[string]interfac
 }
 
 // handleFavoriteFeed 处理收藏/取消收藏
-func (s *AppServer) handleFavoriteFeed(ctx context.Context, args map[string]interface{}) *MCPToolResult {
+func (s *AppServer) handleFavoriteFeed(ctx context.Context, botID string, args map[string]interface{}) *MCPToolResult {
 	feedID, ok := args["feed_id"].(string)
 	if !ok || feedID == "" {
 		return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: "操作失败: 缺少feed_id参数"}}, IsError: true}
@@ -623,9 +622,9 @@ func (s *AppServer) handleFavoriteFeed(ctx context.Context, args map[string]inte
 	var err error
 
 	if unfavorite {
-		res, err = s.xiaohongshuService.UnfavoriteFeed(ctx, feedID, xsecToken)
+		res, err = s.xiaohongshuService.UnfavoriteFeed(ctx, botID, feedID, xsecToken)
 	} else {
-		res, err = s.xiaohongshuService.FavoriteFeed(ctx, feedID, xsecToken)
+		res, err = s.xiaohongshuService.FavoriteFeed(ctx, botID, feedID, xsecToken)
 	}
 
 	if err != nil {
@@ -644,8 +643,8 @@ func (s *AppServer) handleFavoriteFeed(ctx context.Context, args map[string]inte
 }
 
 // handlePostComment 处理发表评论到Feed
-func (s *AppServer) handlePostComment(ctx context.Context, args map[string]interface{}) *MCPToolResult {
-	logrus.Info("MCP: 发表评论到Feed")
+func (s *AppServer) handlePostComment(ctx context.Context, botID string, args map[string]interface{}) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 发表评论到Feed", botID)
 
 	// 解析参数
 	feedID, ok := args["feed_id"].(string)
@@ -684,7 +683,7 @@ func (s *AppServer) handlePostComment(ctx context.Context, args map[string]inter
 	logrus.Infof("MCP: 发表评论 - Feed ID: %s, 内容长度: %d", feedID, len(content))
 
 	// 发表评论
-	result, err := s.xiaohongshuService.PostCommentToFeed(ctx, feedID, xsecToken, content)
+	result, err := s.xiaohongshuService.PostCommentToFeed(ctx, botID, feedID, xsecToken, content)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{
@@ -706,13 +705,13 @@ func (s *AppServer) handlePostComment(ctx context.Context, args map[string]inter
 }
 
 // handleGetBothLoginQrcodes 同时获取主站+创作者平台二维码
-func (s *AppServer) handleGetBothLoginQrcodes(ctx context.Context) *MCPToolResult {
-	logrus.Info("MCP: 同时获取主站+创作者平台二维码")
+func (s *AppServer) handleGetBothLoginQrcodes(ctx context.Context, botID string) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 同时获取主站+创作者平台二维码", botID)
 
 	// 主站二维码（批量获取时无 notifySession）
-	mainResult, mainErr := s.xiaohongshuService.GetLoginQrcode(ctx, "")
+	mainResult, mainErr := s.xiaohongshuService.GetLoginQrcode(ctx, botID, "")
 	// 创作者平台二维码
-	creatorResult, creatorErr := s.xiaohongshuService.GetCreatorLoginQrcode(ctx, "")
+	creatorResult, creatorErr := s.xiaohongshuService.GetCreatorLoginQrcode(ctx, botID, "")
 
 	var contents []MCPContent
 
@@ -722,7 +721,7 @@ func (s *AppServer) handleGetBothLoginQrcodes(ctx context.Context) *MCPToolResul
 		contents = append(contents, MCPContent{Type: "text", Text: "主站: ✅ 已登录"})
 	} else {
 		mainBase64 := strings.TrimPrefix(mainResult.Img, "data:image/png;base64,")
-		s.saveQrImage(mainBase64, "xhs-qr")
+		s.saveQrImage(mainBase64, "xhs-qr", botID)
 		contents = append(contents, MCPContent{Type: "text", Text: "主站登录二维码 👇"})
 		contents = append(contents, MCPContent{
 			Type:     "image",
@@ -737,7 +736,7 @@ func (s *AppServer) handleGetBothLoginQrcodes(ctx context.Context) *MCPToolResul
 		contents = append(contents, MCPContent{Type: "text", Text: "创作者平台: ✅ 已登录"})
 	} else {
 		creatorBase64 := strings.TrimPrefix(creatorResult.Img, "data:image/png;base64,")
-		s.saveQrImage(creatorBase64, "xhs-creator-qr")
+		s.saveQrImage(creatorBase64, "xhs-creator-qr", botID)
 		contents = append(contents, MCPContent{Type: "text", Text: "创作者平台登录二维码 👇"})
 		contents = append(contents, MCPContent{
 			Type:     "image",
@@ -750,10 +749,10 @@ func (s *AppServer) handleGetBothLoginQrcodes(ctx context.Context) *MCPToolResul
 }
 
 // handleGetCreatorLoginQrcode 获取创作者平台登录二维码
-func (s *AppServer) handleGetCreatorLoginQrcode(ctx context.Context, notifySession string) *MCPToolResult {
-	logrus.Info("MCP: 获取创作者平台登录二维码")
+func (s *AppServer) handleGetCreatorLoginQrcode(ctx context.Context, botID string, notifySession string) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 获取创作者平台登录二维码", botID)
 
-	result, err := s.xiaohongshuService.GetCreatorLoginQrcode(ctx, notifySession)
+	result, err := s.xiaohongshuService.GetCreatorLoginQrcode(ctx, botID, notifySession)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{Type: "text", Text: "获取创作者平台二维码失败: " + err.Error()}},
@@ -779,7 +778,7 @@ func (s *AppServer) handleGetCreatorLoginQrcode(ctx context.Context, notifySessi
 	creatorBase64 := strings.TrimPrefix(result.Img, "data:image/png;base64,")
 
 	// 保存创作者平台 QR 图片到 media 目录
-	s.saveQrImage(creatorBase64, "xhs-creator-qr")
+	s.saveQrImage(creatorBase64, "xhs-creator-qr", botID)
 
 	contents := []MCPContent{
 		{Type: "text", Text: "请用小红书 App 在 " + deadline + " 前扫码登录创作者平台 👇"},
@@ -793,10 +792,10 @@ func (s *AppServer) handleGetCreatorLoginQrcode(ctx context.Context, notifySessi
 }
 
 // handleGetCreatorHome 获取创作者首页数据
-func (s *AppServer) handleGetCreatorHome(ctx context.Context) *MCPToolResult {
-	logrus.Info("MCP: 获取创作者首页数据")
+func (s *AppServer) handleGetCreatorHome(ctx context.Context, botID string) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 获取创作者首页数据", botID)
 
-	info, err := s.xiaohongshuService.GetCreatorHome(ctx)
+	info, err := s.xiaohongshuService.GetCreatorHome(ctx, botID)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{Type: "text", Text: "获取创作者首页失败: " + err.Error()}},
@@ -816,10 +815,10 @@ func (s *AppServer) handleGetCreatorHome(ctx context.Context) *MCPToolResult {
 }
 
 // handleListNotes 列出创作者后台笔记
-func (s *AppServer) handleListNotes(ctx context.Context) *MCPToolResult {
-	logrus.Info("MCP: 列出笔记")
+func (s *AppServer) handleListNotes(ctx context.Context, botID string) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 列出笔记", botID)
 
-	notes, err := s.xiaohongshuService.ListNotes(ctx)
+	notes, err := s.xiaohongshuService.ListNotes(ctx, botID)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{Type: "text", Text: "获取笔记列表失败: " + err.Error()}},
@@ -839,7 +838,7 @@ func (s *AppServer) handleListNotes(ctx context.Context) *MCPToolResult {
 }
 
 // handleManageNote 管理笔记（删除/置顶）
-func (s *AppServer) handleManageNote(ctx context.Context, args ManageNoteArgs) *MCPToolResult {
+func (s *AppServer) handleManageNote(ctx context.Context, botID string, args ManageNoteArgs) *MCPToolResult {
 	logrus.Infof("MCP: 管理笔记 - Feed ID: %s, Action: %s", args.FeedID, args.Action)
 
 	if args.FeedID == "" {
@@ -852,9 +851,9 @@ func (s *AppServer) handleManageNote(ctx context.Context, args ManageNoteArgs) *
 	var err error
 	switch args.Action {
 	case "delete":
-		err = s.xiaohongshuService.DeleteNote(ctx, args.FeedID)
+		err = s.xiaohongshuService.DeleteNote(ctx, botID, args.FeedID)
 	case "pin":
-		err = s.xiaohongshuService.PinNote(ctx, args.FeedID)
+		err = s.xiaohongshuService.PinNote(ctx, botID, args.FeedID)
 	default:
 		return &MCPToolResult{
 			Content: []MCPContent{{Type: "text", Text: fmt.Sprintf("不支持的操作: %s（支持 delete、pin）", args.Action)}},
@@ -875,10 +874,10 @@ func (s *AppServer) handleManageNote(ctx context.Context, args ManageNoteArgs) *
 }
 
 // handlePublishLongform 发布长文
-func (s *AppServer) handlePublishLongform(ctx context.Context, args PublishLongformArgs) *MCPToolResult {
+func (s *AppServer) handlePublishLongform(ctx context.Context, botID string, args PublishLongformArgs) *MCPToolResult {
 	logrus.Infof("MCP: 发布长文 - 标题: %s", args.Title)
 
-	err := s.xiaohongshuService.PublishLongform(ctx, args.Title, args.Content, args.Desc, args.Tags, args.Visibility)
+	err := s.xiaohongshuService.PublishLongform(ctx, botID, args.Title, args.Content, args.Desc, args.Tags, args.Visibility)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{Type: "text", Text: "长文发布失败: " + err.Error()}},
@@ -905,7 +904,7 @@ type publishTextToImageArgs struct {
 	Visibility string
 }
 
-func (s *AppServer) handlePublishTextToImage(ctx context.Context, args publishTextToImageArgs, textContent string) *MCPToolResult {
+func (s *AppServer) handlePublishTextToImage(ctx context.Context, botID string, args publishTextToImageArgs, textContent string) *MCPToolResult {
 	// 如果 TextCards 为空，从 textContent 按空行拆分
 	textCards := args.TextCards
 	if len(textCards) == 0 && textContent != "" {
@@ -920,7 +919,7 @@ func (s *AppServer) handlePublishTextToImage(ctx context.Context, args publishTe
 
 	logrus.Infof("MCP: 文字配图发布 - 标题: %s, 卡片数: %d, 样式: %s", args.Title, len(textCards), args.ImageStyle)
 
-	err := s.xiaohongshuService.PublishTextToImage(ctx, args.Title, args.Content, textCards, args.ImageStyle, args.Tags, args.IsOriginal, args.Visibility, args.ScheduleAt)
+	err := s.xiaohongshuService.PublishTextToImage(ctx, botID, args.Title, args.Content, textCards, args.ImageStyle, args.Tags, args.IsOriginal, args.Visibility, args.ScheduleAt)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{Type: "text", Text: "文字配图发布失败: " + err.Error()}},
@@ -951,10 +950,10 @@ func splitTextCards(text string) []string {
 }
 
 // handleGetNotificationComments 获取通知评论列表
-func (s *AppServer) handleGetNotificationComments(ctx context.Context) *MCPToolResult {
-	logrus.Info("MCP: 获取通知评论列表")
+func (s *AppServer) handleGetNotificationComments(ctx context.Context, botID string) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 获取通知评论列表", botID)
 
-	result, err := s.xiaohongshuService.GetNotificationComments(ctx)
+	result, err := s.xiaohongshuService.GetNotificationComments(ctx, botID)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{Type: "text", Text: "获取通知评论失败: " + err.Error()}},
@@ -974,7 +973,7 @@ func (s *AppServer) handleGetNotificationComments(ctx context.Context) *MCPToolR
 }
 
 // handleReplyNotificationComment 通知页回复评论
-func (s *AppServer) handleReplyNotificationComment(ctx context.Context, args ReplyNotificationArgs) *MCPToolResult {
+func (s *AppServer) handleReplyNotificationComment(ctx context.Context, botID string, args ReplyNotificationArgs) *MCPToolResult {
 	logrus.Infof("MCP: 通知页回复第 %d 条评论", args.CommentIndex)
 
 	if args.Content == "" {
@@ -984,7 +983,7 @@ func (s *AppServer) handleReplyNotificationComment(ctx context.Context, args Rep
 		}
 	}
 
-	err := s.xiaohongshuService.ReplyNotificationComment(ctx, args.CommentIndex, args.Content)
+	err := s.xiaohongshuService.ReplyNotificationComment(ctx, botID, args.CommentIndex, args.Content)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{Type: "text", Text: "回复失败: " + err.Error()}},
@@ -998,8 +997,8 @@ func (s *AppServer) handleReplyNotificationComment(ctx context.Context, args Rep
 }
 
 // handleReplyComment 处理回复评论
-func (s *AppServer) handleReplyComment(ctx context.Context, args map[string]interface{}) *MCPToolResult {
-	logrus.Info("MCP: 回复评论")
+func (s *AppServer) handleReplyComment(ctx context.Context, botID string, args map[string]interface{}) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 回复评论", botID)
 
 	// 解析参数
 	feedID, ok := args["feed_id"].(string)
@@ -1050,7 +1049,7 @@ func (s *AppServer) handleReplyComment(ctx context.Context, args map[string]inte
 	logrus.Infof("MCP: 回复评论 - Feed ID: %s, Comment ID: %s, User ID: %s, 内容长度: %d", feedID, commentID, userID, len(content))
 
 	// 回复评论
-	result, err := s.xiaohongshuService.ReplyCommentToFeed(ctx, feedID, xsecToken, commentID, userID, content)
+	result, err := s.xiaohongshuService.ReplyCommentToFeed(ctx, botID, feedID, xsecToken, commentID, userID, content)
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{

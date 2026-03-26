@@ -97,14 +97,14 @@ type UserProfileResponse struct {
 
 // DeleteCookies 全量清除登录状态：删除 cookies.json + 清除浏览器内部 cookie。
 // 这确保 cookie 模式和 profile 模式下主站、创作者平台的 cookie 都被清除。
-func (s *XiaohongshuService) DeleteCookies(ctx context.Context) error {
+func (s *XiaohongshuService) DeleteCookies(ctx context.Context, botID string) error {
 	// 1. 删除 cookies.json 文件
-	cookiePath := cookies.GetCookiesFilePath()
+	cookiePath := cookies.GetCookiesFilePathForBot(botID)
 	cookieLoader := cookies.NewLoadCookie(cookiePath)
 	fileErr := cookieLoader.DeleteCookies()
 
 	// 2. 启动浏览器并清除内部 cookie（profile 模式下 Chrome 会持久化 cookie）
-	b := newBrowser()
+	b := newBrowserForBot(botID)
 	page := b.NewPage()
 	browserErr := page.Browser().SetCookies(nil)
 	_ = page.Close()
@@ -120,8 +120,8 @@ func (s *XiaohongshuService) DeleteCookies(ctx context.Context) error {
 }
 
 // CheckLoginStatus 检查登录状态
-func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatusResponse, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context, botID string) (*LoginStatusResponse, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -144,8 +144,8 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context) (*LoginStatus
 
 // GetLoginQrcode 获取登录的扫码二维码。
 // notifySession：可选，扫码成功保存 cookie 后通过 openclaw 向该 session 回传通知。
-func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context, notifySession string) (*LoginQrcodeResponse, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context, botID string, notifySession string) (*LoginQrcodeResponse, error) {
+	b := newBrowserForBot(botID)
 	page := b.NewPage()
 
 	deferFunc := func() {
@@ -191,7 +191,7 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context, notifySession s
 
 			if loginAction.WaitForLogin(ctxTimeout) {
 				logrus.Info("main login: WaitForLogin returned true, saving cookies")
-				if er := saveCookies(page); er != nil {
+				if er := saveCookiesForBot(page, botID); er != nil {
 					logrus.Errorf("failed to save cookies: %v", er)
 				} else {
 					logrus.Info("main login: cookies saved successfully")
@@ -216,7 +216,7 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context, notifySession s
 }
 
 // PublishContent 发布内容
-func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishRequest) (*PublishResponse, error) {
+func (s *XiaohongshuService) PublishContent(ctx context.Context, botID string, req *PublishRequest) (*PublishResponse, error) {
 	// 验证标题长度（小红书限制：最大20个字）
 	if xhsutil.CalcTitleLength(req.Title) > 20 {
 		return nil, fmt.Errorf("标题长度超过限制")
@@ -267,7 +267,7 @@ func (s *XiaohongshuService) PublishContent(ctx context.Context, req *PublishReq
 	}
 
 	// 执行发布
-	if err := s.publishContent(ctx, content); err != nil {
+	if err := s.publishContent(ctx, botID, content); err != nil {
 		logrus.Errorf("发布内容失败: title=%s %v", content.Title, err)
 		return nil, err
 	}
@@ -289,8 +289,8 @@ func (s *XiaohongshuService) processImages(images []string) ([]string, error) {
 }
 
 // publishContent 执行内容发布
-func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohongshu.PublishImageContent) error {
-	b := newBrowser()
+func (s *XiaohongshuService) publishContent(ctx context.Context, botID string, content xiaohongshu.PublishImageContent) error {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -306,7 +306,7 @@ func (s *XiaohongshuService) publishContent(ctx context.Context, content xiaohon
 }
 
 // PublishVideo 发布视频（本地文件）
-func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideoRequest) (*PublishVideoResponse, error) {
+func (s *XiaohongshuService) PublishVideo(ctx context.Context, botID string, req *PublishVideoRequest) (*PublishVideoResponse, error) {
 	// 标题长度校验（小红书限制：最大20个字）
 	if xhsutil.CalcTitleLength(req.Title) > 20 {
 		return nil, fmt.Errorf("标题长度超过限制")
@@ -358,7 +358,7 @@ func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideo
 	}
 
 	// 执行发布
-	if err := s.publishVideo(ctx, content); err != nil {
+	if err := s.publishVideo(ctx, botID, content); err != nil {
 		return nil, err
 	}
 
@@ -372,8 +372,8 @@ func (s *XiaohongshuService) PublishVideo(ctx context.Context, req *PublishVideo
 }
 
 // publishVideo 执行视频发布
-func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongshu.PublishVideoContent) error {
-	b := newBrowser()
+func (s *XiaohongshuService) publishVideo(ctx context.Context, botID string, content xiaohongshu.PublishVideoContent) error {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -388,8 +388,8 @@ func (s *XiaohongshuService) publishVideo(ctx context.Context, content xiaohongs
 }
 
 // ListFeeds 获取Feeds列表
-func (s *XiaohongshuService) ListFeeds(ctx context.Context) (*FeedsListResponse, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) ListFeeds(ctx context.Context, botID string) (*FeedsListResponse, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -413,8 +413,8 @@ func (s *XiaohongshuService) ListFeeds(ctx context.Context) (*FeedsListResponse,
 	return response, nil
 }
 
-func (s *XiaohongshuService) SearchFeeds(ctx context.Context, keyword string, filters ...xiaohongshu.FilterOption) (*FeedsListResponse, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) SearchFeeds(ctx context.Context, botID string, keyword string, filters ...xiaohongshu.FilterOption) (*FeedsListResponse, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -436,13 +436,13 @@ func (s *XiaohongshuService) SearchFeeds(ctx context.Context, keyword string, fi
 }
 
 // GetFeedDetail 获取Feed详情
-func (s *XiaohongshuService) GetFeedDetail(ctx context.Context, feedID, xsecToken string, loadAllComments bool) (*FeedDetailResponse, error) {
-	return s.GetFeedDetailWithConfig(ctx, feedID, xsecToken, loadAllComments, xiaohongshu.DefaultCommentLoadConfig())
+func (s *XiaohongshuService) GetFeedDetail(ctx context.Context, botID string, feedID, xsecToken string, loadAllComments bool) (*FeedDetailResponse, error) {
+	return s.GetFeedDetailWithConfig(ctx, botID, feedID, xsecToken, loadAllComments, xiaohongshu.DefaultCommentLoadConfig())
 }
 
 // GetFeedDetailWithConfig 使用配置获取Feed详情
-func (s *XiaohongshuService) GetFeedDetailWithConfig(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config xiaohongshu.CommentLoadConfig) (*FeedDetailResponse, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) GetFeedDetailWithConfig(ctx context.Context, botID string, feedID, xsecToken string, loadAllComments bool, config xiaohongshu.CommentLoadConfig) (*FeedDetailResponse, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -466,8 +466,8 @@ func (s *XiaohongshuService) GetFeedDetailWithConfig(ctx context.Context, feedID
 }
 
 // UserProfile 获取用户信息
-func (s *XiaohongshuService) UserProfile(ctx context.Context, userID, xsecToken string) (*UserProfileResponse, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) UserProfile(ctx context.Context, botID string, userID, xsecToken string) (*UserProfileResponse, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -490,8 +490,8 @@ func (s *XiaohongshuService) UserProfile(ctx context.Context, userID, xsecToken 
 }
 
 // PostCommentToFeed 发表评论到Feed
-func (s *XiaohongshuService) PostCommentToFeed(ctx context.Context, feedID, xsecToken, content string) (*PostCommentResponse, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) PostCommentToFeed(ctx context.Context, botID string, feedID, xsecToken, content string) (*PostCommentResponse, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -507,8 +507,8 @@ func (s *XiaohongshuService) PostCommentToFeed(ctx context.Context, feedID, xsec
 }
 
 // LikeFeed 点赞笔记
-func (s *XiaohongshuService) LikeFeed(ctx context.Context, feedID, xsecToken string) (*ActionResult, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) LikeFeed(ctx context.Context, botID string, feedID, xsecToken string) (*ActionResult, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -522,8 +522,8 @@ func (s *XiaohongshuService) LikeFeed(ctx context.Context, feedID, xsecToken str
 }
 
 // UnlikeFeed 取消点赞笔记
-func (s *XiaohongshuService) UnlikeFeed(ctx context.Context, feedID, xsecToken string) (*ActionResult, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) UnlikeFeed(ctx context.Context, botID string, feedID, xsecToken string) (*ActionResult, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -537,8 +537,8 @@ func (s *XiaohongshuService) UnlikeFeed(ctx context.Context, feedID, xsecToken s
 }
 
 // FavoriteFeed 收藏笔记
-func (s *XiaohongshuService) FavoriteFeed(ctx context.Context, feedID, xsecToken string) (*ActionResult, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) FavoriteFeed(ctx context.Context, botID string, feedID, xsecToken string) (*ActionResult, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -552,8 +552,8 @@ func (s *XiaohongshuService) FavoriteFeed(ctx context.Context, feedID, xsecToken
 }
 
 // UnfavoriteFeed 取消收藏笔记
-func (s *XiaohongshuService) UnfavoriteFeed(ctx context.Context, feedID, xsecToken string) (*ActionResult, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) UnfavoriteFeed(ctx context.Context, botID string, feedID, xsecToken string) (*ActionResult, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -567,8 +567,8 @@ func (s *XiaohongshuService) UnfavoriteFeed(ctx context.Context, feedID, xsecTok
 }
 
 // ReplyCommentToFeed 回复指定评论
-func (s *XiaohongshuService) ReplyCommentToFeed(ctx context.Context, feedID, xsecToken, commentID, userID, content string) (*ReplyCommentResponse, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) ReplyCommentToFeed(ctx context.Context, botID string, feedID, xsecToken, commentID, userID, content string) (*ReplyCommentResponse, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -590,14 +590,36 @@ func (s *XiaohongshuService) ReplyCommentToFeed(ctx context.Context, feedID, xse
 }
 
 func newBrowser() *browser.Browser {
+	return newBrowserForBot("")
+}
+
+// newBrowserForBot 为指定 bot 创建浏览器实例。
+// botID 为空时 fallback 到全局配置（兼容单实例模式）。
+func newBrowserForBot(botID string) *browser.Browser {
 	opts := []browser.Option{browser.WithBinPath(configs.GetBinPath())}
-	if d := configs.GetProfileDir(); d != "" {
-		opts = append(opts, browser.WithProfileDir(d))
+
+	if botID != "" {
+		// 多租户模式：使用 per-bot 的 cookie 和 profile
+		opts = append(opts, browser.WithCookiePath(cookies.GetCookiesFilePathForBot(botID)))
+		if d := configs.GetProfileDirForBot(botID); d != "" {
+			opts = append(opts, browser.WithProfileDir(d))
+		}
+	} else {
+		// 兼容模式：使用全局配置
+		if d := configs.GetProfileDir(); d != "" {
+			opts = append(opts, browser.WithProfileDir(d))
+		}
 	}
+
 	return browser.NewBrowser(configs.IsHeadless(), opts...)
 }
 
 func saveCookies(page *rod.Page) error {
+	return saveCookiesForBot(page, "")
+}
+
+// saveCookiesForBot 保存 cookies 到指定 bot 的 cookie 文件。
+func saveCookiesForBot(page *rod.Page, botID string) error {
 	cks, err := page.Browser().GetCookies()
 	if err != nil {
 		return err
@@ -608,13 +630,18 @@ func saveCookies(page *rod.Page) error {
 		return err
 	}
 
-	cookieLoader := cookies.NewLoadCookie(cookies.GetCookiesFilePath())
+	cookieLoader := cookies.NewLoadCookie(cookies.GetCookiesFilePathForBot(botID))
 	return cookieLoader.SaveCookies(data)
 }
 
 // withBrowserPage 执行需要浏览器页面的操作的通用函数
 func withBrowserPage(fn func(*rod.Page) error) error {
-	b := newBrowser()
+	return withBrowserPageForBot("", fn)
+}
+
+// withBrowserPageForBot 为指定 bot 执行浏览器操作
+func withBrowserPageForBot(botID string, fn func(*rod.Page) error) error {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -624,8 +651,8 @@ func withBrowserPage(fn func(*rod.Page) error) error {
 }
 
 // CheckBothLoginStatus 用单个 browser 同时检查主站 + 创作者平台登录状态
-func (s *XiaohongshuService) CheckBothLoginStatus(ctx context.Context) (mainOK bool, creatorOK bool) {
-	b := newBrowser()
+func (s *XiaohongshuService) CheckBothLoginStatus(ctx context.Context, botID string) (mainOK bool, creatorOK bool) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -647,8 +674,8 @@ func (s *XiaohongshuService) CheckBothLoginStatus(ctx context.Context) (mainOK b
 }
 
 // CheckCreatorLoginStatus 检查创作者平台登录状态（单独使用时）
-func (s *XiaohongshuService) CheckCreatorLoginStatus(ctx context.Context) bool {
-	b := newBrowser()
+func (s *XiaohongshuService) CheckCreatorLoginStatus(ctx context.Context, botID string) bool {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -673,8 +700,8 @@ func (s *XiaohongshuService) CheckCreatorLoginStatus(ctx context.Context) bool {
 }
 
 // GetCreatorLoginQrcode 获取创作者平台登录二维码
-func (s *XiaohongshuService) GetCreatorLoginQrcode(ctx context.Context, notifySession string) (*LoginQrcodeResponse, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) GetCreatorLoginQrcode(ctx context.Context, botID string, notifySession string) (*LoginQrcodeResponse, error) {
+	b := newBrowserForBot(botID)
 	page := b.NewPage()
 
 	deferFunc := func() {
@@ -757,7 +784,7 @@ func (s *XiaohongshuService) GetCreatorLoginQrcode(ctx context.Context, notifySe
 				}
 				logrus.Infof("creator login poll: url=%s", info.URL)
 				if !strings.Contains(info.URL, "/login") {
-					if er := saveCookies(page); er != nil {
+					if er := saveCookiesForBot(page, botID); er != nil {
 						logrus.Errorf("failed to save creator cookies: %v", er)
 					} else {
 						notifyLoginSuccess(notifySession, "creator")
@@ -776,8 +803,8 @@ func (s *XiaohongshuService) GetCreatorLoginQrcode(ctx context.Context, notifySe
 }
 
 // GetCreatorHome 获取创作者首页数据
-func (s *XiaohongshuService) GetCreatorHome(ctx context.Context) (*xiaohongshu.CreatorHomeInfo, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) GetCreatorHome(ctx context.Context, botID string) (*xiaohongshu.CreatorHomeInfo, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -788,8 +815,8 @@ func (s *XiaohongshuService) GetCreatorHome(ctx context.Context) (*xiaohongshu.C
 }
 
 // ListNotes 列出创作者后台笔记
-func (s *XiaohongshuService) ListNotes(ctx context.Context) ([]xiaohongshu.NoteInfo, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) ListNotes(ctx context.Context, botID string) ([]xiaohongshu.NoteInfo, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -800,8 +827,8 @@ func (s *XiaohongshuService) ListNotes(ctx context.Context) ([]xiaohongshu.NoteI
 }
 
 // DeleteNote 删除笔记
-func (s *XiaohongshuService) DeleteNote(ctx context.Context, feedID string) error {
-	b := newBrowser()
+func (s *XiaohongshuService) DeleteNote(ctx context.Context, botID string, feedID string) error {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -812,8 +839,8 @@ func (s *XiaohongshuService) DeleteNote(ctx context.Context, feedID string) erro
 }
 
 // PinNote 置顶笔记
-func (s *XiaohongshuService) PinNote(ctx context.Context, feedID string) error {
-	b := newBrowser()
+func (s *XiaohongshuService) PinNote(ctx context.Context, botID string, feedID string) error {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -824,8 +851,8 @@ func (s *XiaohongshuService) PinNote(ctx context.Context, feedID string) error {
 }
 
 // PublishLongform 发布长文
-func (s *XiaohongshuService) PublishLongform(ctx context.Context, title, content, desc string, tags []string, visibility string) error {
-	b := newBrowser()
+func (s *XiaohongshuService) PublishLongform(ctx context.Context, botID string, title, content, desc string, tags []string, visibility string) error {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -846,7 +873,7 @@ func (s *XiaohongshuService) PublishLongform(ctx context.Context, title, content
 }
 
 // PublishTextToImage 文字配图发布
-func (s *XiaohongshuService) PublishTextToImage(ctx context.Context, title, content string, textCards []string, imageStyle string, tags []string, isOriginal bool, visibility string, scheduleAt string) error {
+func (s *XiaohongshuService) PublishTextToImage(ctx context.Context, botID string, title, content string, textCards []string, imageStyle string, tags []string, isOriginal bool, visibility string, scheduleAt string) error {
 	if xhsutil.CalcTitleLength(title) > 20 {
 		return fmt.Errorf("标题长度超过限制")
 	}
@@ -860,7 +887,7 @@ func (s *XiaohongshuService) PublishTextToImage(ctx context.Context, title, cont
 		scheduleTime = &t
 	}
 
-	b := newBrowser()
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -884,8 +911,8 @@ func (s *XiaohongshuService) PublishTextToImage(ctx context.Context, title, cont
 }
 
 // GetNotificationComments 获取通知评论列表
-func (s *XiaohongshuService) GetNotificationComments(ctx context.Context) (*xiaohongshu.NotificationListResponse, error) {
-	b := newBrowser()
+func (s *XiaohongshuService) GetNotificationComments(ctx context.Context, botID string) (*xiaohongshu.NotificationListResponse, error) {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -896,8 +923,8 @@ func (s *XiaohongshuService) GetNotificationComments(ctx context.Context) (*xiao
 }
 
 // ReplyNotificationComment 通知页回复评论
-func (s *XiaohongshuService) ReplyNotificationComment(ctx context.Context, commentIndex int, content string) error {
-	b := newBrowser()
+func (s *XiaohongshuService) ReplyNotificationComment(ctx context.Context, botID string, commentIndex int, content string) error {
+	b := newBrowserForBot(botID)
 	defer b.Close()
 
 	page := b.NewPage()
@@ -908,11 +935,11 @@ func (s *XiaohongshuService) ReplyNotificationComment(ctx context.Context, comme
 }
 
 // GetMyProfile 获取当前登录用户的个人信息
-func (s *XiaohongshuService) GetMyProfile(ctx context.Context) (*UserProfileResponse, error) {
+func (s *XiaohongshuService) GetMyProfile(ctx context.Context, botID string) (*UserProfileResponse, error) {
 	var result *xiaohongshu.UserProfileResponse
 	var err error
 
-	err = withBrowserPage(func(page *rod.Page) error {
+	err = withBrowserPageForBot(botID, func(page *rod.Page) error {
 		action := xiaohongshu.NewUserProfileAction(page)
 		result, err = action.GetMyProfileViaSidebar(ctx)
 		return err

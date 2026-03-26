@@ -1,6 +1,7 @@
 package cookies
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -80,4 +81,13 @@ func GetCookiesFilePath() string {
 	}
 
 	return "cookies.json"
+}
+
+// GetCookiesFilePathForBot 返回指定 bot 的 cookie 文件路径。
+// botID 为空时 fallback 到全局 GetCookiesFilePath()。
+func GetCookiesFilePathForBot(botID string) string {
+	if botID == "" {
+		return GetCookiesFilePath()
+	}
+	return fmt.Sprintf("cookies-%s.json", botID)
 }

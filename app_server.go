@@ -2,12 +2,10 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
-	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -19,30 +17,47 @@ import (
 // AppServer 应用服务器结构体，封装所有服务和处理器
 type AppServer struct {
 	xiaohongshuService *XiaohongshuService
-	mcpServer          *mcp.Server
+	defaultMcpServer   *mcp.Server            // fallback（无 botID 时使用）
+	botMcpServers      map[string]*mcp.Server  // botID → per-bot MCP Server
+	botMcpMu           sync.RWMutex
 	router             *gin.Engine
 	httpServer         *http.Server
-	port               string // 启动端口，如 ":18070"
+	port               string // 启动端口，如 ":18060"
+	botID              string // 当前 handler 上下文的 botID（per-bot AppServer wrapper 使用）
 }
 
-// getBotID 从端口号推断 bot ID（:18061→bot1, :18070→bot10）
-func (s *AppServer) getBotID() string {
-	p := strings.TrimPrefix(s.port, ":")
-	num, err := strconv.Atoi(p)
-	if err != nil || num < 18061 || num > 18070 {
-		return ""
+// getOrCreateBotMCPServer 获取或创建指定 bot 的 MCP Server 实例
+func (s *AppServer) getOrCreateBotMCPServer(botID string) *mcp.Server {
+	s.botMcpMu.RLock()
+	if srv, ok := s.botMcpServers[botID]; ok {
+		s.botMcpMu.RUnlock()
+		return srv
 	}
-	return fmt.Sprintf("bot%d", num-18060)
+	s.botMcpMu.RUnlock()
+
+	s.botMcpMu.Lock()
+	defer s.botMcpMu.Unlock()
+
+	// double check
+	if srv, ok := s.botMcpServers[botID]; ok {
+		return srv
+	}
+
+	srv := InitMCPServerForBot(s, botID)
+	s.botMcpServers[botID] = srv
+	logrus.Infof("创建 bot %s 的 MCP Server 实例", botID)
+	return srv
 }
 
 // NewAppServer 创建新的应用服务器实例
 func NewAppServer(xiaohongshuService *XiaohongshuService) *AppServer {
 	appServer := &AppServer{
 		xiaohongshuService: xiaohongshuService,
+		botMcpServers:      make(map[string]*mcp.Server),
 	}
 
-	// 初始化 MCP Server（需要在创建 appServer 之后，因为工具注册需要访问 appServer）
-	appServer.mcpServer = InitMCPServer(appServer)
+	// 初始化默认 MCP Server（兼容无 botID 的请求）
+	appServer.defaultMcpServer = InitMCPServerForBot(appServer, "")
 
 	return appServer
 }

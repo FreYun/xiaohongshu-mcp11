@@ -42,6 +42,7 @@ func (b *Browser) Close() {
 type browserConfig struct {
 	binPath    string
 	profileDir string
+	cookiePath string // 指定 cookie 文件路径（多租户模式）
 }
 
 type Option func(*browserConfig)
@@ -57,6 +58,14 @@ func WithBinPath(binPath string) Option {
 func WithProfileDir(dir string) Option {
 	return func(c *browserConfig) {
 		c.profileDir = dir
+	}
+}
+
+// WithCookiePath sets a specific cookie file path for this browser instance.
+// When set, overrides the global cookies.GetCookiesFilePath().
+func WithCookiePath(path string) Option {
+	return func(c *browserConfig) {
+		c.cookiePath = path
 	}
 }
 
@@ -99,7 +108,10 @@ func NewBrowser(headless bool, options ...Option) *Browser {
 	}
 
 	// 加载 cookies
-	cookiePath := cookies.GetCookiesFilePath()
+	cookiePath := cfg.cookiePath
+	if cookiePath == "" {
+		cookiePath = cookies.GetCookiesFilePath()
+	}
 	cookieLoader := cookies.NewLoadCookie(cookiePath)
 
 	if data, err := cookieLoader.LoadCookies(); err == nil {
@@ -141,15 +153,19 @@ func newBrowserWithProfile(headless bool, cfg *browserConfig) *Browser {
 
 	// 注入 cookies.json 中的 cookie，使 profile 模式与 cookie 文件模式保持一致。
 	// 这样即使是新建的 Chrome profile，也能携带已保存的 web_session 等认证 cookie。
-	injectCookiesFromFile(b)
+	injectCookiesFromFile(b, cfg.cookiePath)
 
 	return &Browser{rod: b, launcher: l}
 }
 
 // injectCookiesFromFile 通过临时 page 将 cookies.json 注入浏览器。
 // Network.setCookies 是 page-level CDP 方法，不能在 browser target 上调用。
-func injectCookiesFromFile(b *rod.Browser) {
-	cookiePath := cookies.GetCookiesFilePath()
+// cookiePathOverride 不为空时使用该路径代替全局路径。
+func injectCookiesFromFile(b *rod.Browser, cookiePathOverride string) {
+	cookiePath := cookiePathOverride
+	if cookiePath == "" {
+		cookiePath = cookies.GetCookiesFilePath()
+	}
 	cookieLoader := cookies.NewLoadCookie(cookiePath)
 
 	data, err := cookieLoader.LoadCookies()

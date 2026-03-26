@@ -40,7 +40,7 @@ func respondSuccess(c *gin.Context, data any, message string) {
 
 // checkLoginStatusHandler 检查登录状态
 func (s *AppServer) checkLoginStatusHandler(c *gin.Context) {
-	status, err := s.xiaohongshuService.CheckLoginStatus(c.Request.Context())
+	status, err := s.xiaohongshuService.CheckLoginStatus(c.Request.Context(), "")
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "STATUS_CHECK_FAILED",
 			"检查登录状态失败", err.Error())
@@ -54,7 +54,7 @@ func (s *AppServer) checkLoginStatusHandler(c *gin.Context) {
 // getLoginQrcodeHandler 处理 [GET /api/login/qrcode] 请求。
 // 用于生成并返回登录二维码（Base64 图片 + 超时时间），供前端展示给用户扫码登录。
 func (s *AppServer) getLoginQrcodeHandler(c *gin.Context) {
-	result, err := s.xiaohongshuService.GetLoginQrcode(c.Request.Context(), c.Query("notify_session"))
+	result, err := s.xiaohongshuService.GetLoginQrcode(c.Request.Context(), "", c.Query("notify_session"))
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "STATUS_CHECK_FAILED",
 			"获取登录二维码失败", err.Error())
@@ -66,7 +66,7 @@ func (s *AppServer) getLoginQrcodeHandler(c *gin.Context) {
 
 // deleteCookiesHandler 删除 cookies，重置登录状态
 func (s *AppServer) deleteCookiesHandler(c *gin.Context) {
-	err := s.xiaohongshuService.DeleteCookies(c.Request.Context())
+	err := s.xiaohongshuService.DeleteCookies(c.Request.Context(), "")
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "DELETE_COOKIES_FAILED",
 			"删除 cookies 失败", err.Error())
@@ -90,7 +90,7 @@ func (s *AppServer) publishHandler(c *gin.Context) {
 	}
 
 	// 执行发布
-	result, err := s.xiaohongshuService.PublishContent(c.Request.Context(), &req)
+	result, err := s.xiaohongshuService.PublishContent(c.Request.Context(), "", &req)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "PUBLISH_FAILED",
 			"发布失败", err.Error())
@@ -110,7 +110,7 @@ func (s *AppServer) publishVideoHandler(c *gin.Context) {
 	}
 
 	// 执行视频发布
-	result, err := s.xiaohongshuService.PublishVideo(c.Request.Context(), &req)
+	result, err := s.xiaohongshuService.PublishVideo(c.Request.Context(), "", &req)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "PUBLISH_VIDEO_FAILED",
 			"视频发布失败", err.Error())
@@ -123,7 +123,7 @@ func (s *AppServer) publishVideoHandler(c *gin.Context) {
 // listFeedsHandler 获取Feeds列表
 func (s *AppServer) listFeedsHandler(c *gin.Context) {
 	// 获取 Feeds 列表
-	result, err := s.xiaohongshuService.ListFeeds(c.Request.Context())
+	result, err := s.xiaohongshuService.ListFeeds(c.Request.Context(), "")
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "LIST_FEEDS_FAILED",
 			"获取Feeds列表失败", err.Error())
@@ -161,7 +161,7 @@ func (s *AppServer) searchFeedsHandler(c *gin.Context) {
 	}
 
 	// 搜索 Feeds
-	result, err := s.xiaohongshuService.SearchFeeds(c.Request.Context(), keyword, filters)
+	result, err := s.xiaohongshuService.SearchFeeds(c.Request.Context(), "", keyword, filters)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "SEARCH_FEEDS_FAILED",
 			"搜索Feeds失败", err.Error())
@@ -192,10 +192,10 @@ func (s *AppServer) getFeedDetailHandler(c *gin.Context) {
 			MaxCommentItems:     req.CommentConfig.MaxCommentItems,
 			ScrollSpeed:         req.CommentConfig.ScrollSpeed,
 		}
-		result, err = s.xiaohongshuService.GetFeedDetailWithConfig(c.Request.Context(), req.FeedID, req.XsecToken, req.LoadAllComments, config)
+		result, err = s.xiaohongshuService.GetFeedDetailWithConfig(c.Request.Context(), "", req.FeedID, req.XsecToken, req.LoadAllComments, config)
 	} else {
 		// 使用默认配置
-		result, err = s.xiaohongshuService.GetFeedDetail(c.Request.Context(), req.FeedID, req.XsecToken, req.LoadAllComments)
+		result, err = s.xiaohongshuService.GetFeedDetail(c.Request.Context(), "", req.FeedID, req.XsecToken, req.LoadAllComments)
 	}
 
 	if err != nil {
@@ -218,7 +218,7 @@ func (s *AppServer) userProfileHandler(c *gin.Context) {
 	}
 
 	// 获取用户信息
-	result, err := s.xiaohongshuService.UserProfile(c.Request.Context(), req.UserID, req.XsecToken)
+	result, err := s.xiaohongshuService.UserProfile(c.Request.Context(), "", req.UserID, req.XsecToken)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "GET_USER_PROFILE_FAILED",
 			"获取用户主页失败", err.Error())
@@ -239,7 +239,7 @@ func (s *AppServer) postCommentHandler(c *gin.Context) {
 	}
 
 	// 发表评论
-	result, err := s.xiaohongshuService.PostCommentToFeed(c.Request.Context(), req.FeedID, req.XsecToken, req.Content)
+	result, err := s.xiaohongshuService.PostCommentToFeed(c.Request.Context(), "", req.FeedID, req.XsecToken, req.Content)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "POST_COMMENT_FAILED",
 			"发表评论失败", err.Error())
@@ -259,7 +259,7 @@ func (s *AppServer) replyCommentHandler(c *gin.Context) {
 		return
 	}
 
-	result, err := s.xiaohongshuService.ReplyCommentToFeed(c.Request.Context(), req.FeedID, req.XsecToken, req.CommentID, req.UserID, req.Content)
+	result, err := s.xiaohongshuService.ReplyCommentToFeed(c.Request.Context(), "", req.FeedID, req.XsecToken, req.CommentID, req.UserID, req.Content)
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "REPLY_COMMENT_FAILED",
 			"回复评论失败", err.Error())
@@ -283,7 +283,7 @@ func healthHandler(c *gin.Context) {
 // myProfileHandler 我的信息
 func (s *AppServer) myProfileHandler(c *gin.Context) {
 	// 获取当前登录用户信息
-	result, err := s.xiaohongshuService.GetMyProfile(c.Request.Context())
+	result, err := s.xiaohongshuService.GetMyProfile(c.Request.Context(), "")
 	if err != nil {
 		respondError(c, http.StatusInternalServerError, "GET_MY_PROFILE_FAILED",
 			"获取我的主页失败", err.Error())

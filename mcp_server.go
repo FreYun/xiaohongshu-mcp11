@@ -130,9 +130,9 @@ type PublishLongformArgs struct {
 	Visibility string   `json:"visibility,omitempty" jsonschema:"可见范围（可选），支持: 公开可见(默认)、仅自己可见、仅互关好友可见"`
 }
 
-// InitMCPServer 初始化 MCP Server
-func InitMCPServer(appServer *AppServer) *mcp.Server {
-	// 创建 MCP Server
+// InitMCPServerForBot 初始化指定 bot 的 MCP Server。
+// botID 为空时创建默认 fallback Server。
+func InitMCPServerForBot(appServer *AppServer, botID string) *mcp.Server {
 	server := mcp.NewServer(
 		&mcp.Implementation{
 			Name:    "xiaohongshu-mcp",
@@ -141,10 +141,13 @@ func InitMCPServer(appServer *AppServer) *mcp.Server {
 		nil,
 	)
 
-	// 注册所有工具
-	registerTools(server, appServer)
+	registerTools(server, appServer, botID)
 
-	logrus.Info("MCP Server initialized with official SDK")
+	if botID != "" {
+		logrus.Infof("MCP Server initialized for bot: %s", botID)
+	} else {
+		logrus.Info("MCP Server initialized (default/fallback)")
+	}
 
 	return server
 }
@@ -181,8 +184,8 @@ func withPanicRecovery[T any](
 	}
 }
 
-// registerTools 注册所有 MCP 工具
-func registerTools(server *mcp.Server, appServer *AppServer) {
+// registerTools 注册所有 MCP 工具。botID 在闭包中捕获，传递到 handler 层。
+func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	// 工具 1: 检查登录状态
 	mcp.AddTool(server,
 		&mcp.Tool{
@@ -194,7 +197,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("check_login_status", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
-			result := appServer.handleCheckLoginStatus(ctx)
+			result := appServer.handleCheckLoginStatus(ctx, botID)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -210,7 +213,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("get_login_qrcode", func(ctx context.Context, req *mcp.CallToolRequest, args GetLoginQrcodeArgs) (*mcp.CallToolResult, any, error) {
-			result := appServer.handleGetLoginQrcode(ctx, args.NotifySession)
+			result := appServer.handleGetLoginQrcode(ctx, botID, args.NotifySession)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -226,7 +229,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("delete_cookies", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
-			result := appServer.handleDeleteCookies(ctx)
+			result := appServer.handleDeleteCookies(ctx, botID)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -245,7 +248,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			var result *MCPToolResult
 			if args.TextToImage {
 				// 文字配图模式
-				result = appServer.handlePublishTextToImage(ctx, publishTextToImageArgs{
+				result = appServer.handlePublishTextToImage(ctx, botID, publishTextToImageArgs{
 					Title:      args.Title,
 					Content:    args.Content,
 					ImageStyle: args.ImageStyle,
@@ -266,7 +269,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 					"visibility":  args.Visibility,
 					"products":    convertStringsToInterfaces(args.Products),
 				}
-				result = appServer.handlePublishContent(ctx, argsMap)
+				result = appServer.handlePublishContent(ctx, botID, argsMap)
 			}
 			return convertToMCPResult(result), nil, nil
 		}),
@@ -283,7 +286,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("list_feeds", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
-			result := appServer.handleListFeeds(ctx)
+			result := appServer.handleListFeeds(ctx, botID)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -299,7 +302,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("search_feeds", func(ctx context.Context, req *mcp.CallToolRequest, args SearchFeedsArgs) (*mcp.CallToolResult, any, error) {
-			result := appServer.handleSearchFeeds(ctx, args)
+			result := appServer.handleSearchFeeds(ctx, botID, args)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -344,7 +347,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 				}
 			}
 
-			result := appServer.handleGetFeedDetail(ctx, argsMap)
+			result := appServer.handleGetFeedDetail(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -364,7 +367,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 				"user_id":    args.UserID,
 				"xsec_token": args.XsecToken,
 			}
-			result := appServer.handleUserProfile(ctx, argsMap)
+			result := appServer.handleUserProfile(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -385,7 +388,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 				"xsec_token": args.XsecToken,
 				"content":    args.Content,
 			}
-			result := appServer.handlePostComment(ctx, argsMap)
+			result := appServer.handlePostComment(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -415,7 +418,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 				"user_id":    args.UserID,
 				"content":    args.Content,
 			}
-			result := appServer.handleReplyComment(ctx, argsMap)
+			result := appServer.handleReplyComment(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
 		},
 	)
@@ -440,7 +443,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 				"visibility":  args.Visibility,
 				"products":    convertStringsToInterfaces(args.Products),
 			}
-			result := appServer.handlePublishVideo(ctx, argsMap)
+			result := appServer.handlePublishVideo(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -461,7 +464,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 				"xsec_token": args.XsecToken,
 				"unlike":     args.Unlike,
 			}
-			result := appServer.handleLikeFeed(ctx, argsMap)
+			result := appServer.handleLikeFeed(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -482,7 +485,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 				"xsec_token": args.XsecToken,
 				"unfavorite": args.Unfavorite,
 			}
-			result := appServer.handleFavoriteFeed(ctx, argsMap)
+			result := appServer.handleFavoriteFeed(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -498,7 +501,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("get_both_login_qrcodes", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
-			result := appServer.handleGetBothLoginQrcodes(ctx)
+			result := appServer.handleGetBothLoginQrcodes(ctx, botID)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -514,7 +517,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("get_creator_login_qrcode", func(ctx context.Context, req *mcp.CallToolRequest, args GetLoginQrcodeArgs) (*mcp.CallToolResult, any, error) {
-			result := appServer.handleGetCreatorLoginQrcode(ctx, args.NotifySession)
+			result := appServer.handleGetCreatorLoginQrcode(ctx, botID, args.NotifySession)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -530,7 +533,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("get_creator_home", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
-			result := appServer.handleGetCreatorHome(ctx)
+			result := appServer.handleGetCreatorHome(ctx, botID)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -546,7 +549,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("list_notes", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
-			result := appServer.handleListNotes(ctx)
+			result := appServer.handleListNotes(ctx, botID)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -562,7 +565,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("manage_note", func(ctx context.Context, req *mcp.CallToolRequest, args ManageNoteArgs) (*mcp.CallToolResult, any, error) {
-			result := appServer.handleManageNote(ctx, args)
+			result := appServer.handleManageNote(ctx, botID, args)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -578,7 +581,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("publish_longform", func(ctx context.Context, req *mcp.CallToolRequest, args PublishLongformArgs) (*mcp.CallToolResult, any, error) {
-			result := appServer.handlePublishLongform(ctx, args)
+			result := appServer.handlePublishLongform(ctx, botID, args)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -594,7 +597,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("get_notification_comments", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
-			result := appServer.handleGetNotificationComments(ctx)
+			result := appServer.handleGetNotificationComments(ctx, botID)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
@@ -610,7 +613,7 @@ func registerTools(server *mcp.Server, appServer *AppServer) {
 			},
 		},
 		withPanicRecovery("reply_notification_comment", func(ctx context.Context, req *mcp.CallToolRequest, args ReplyNotificationArgs) (*mcp.CallToolResult, any, error) {
-			result := appServer.handleReplyNotificationComment(ctx, args)
+			result := appServer.handleReplyNotificationComment(ctx, botID, args)
 			return convertToMCPResult(result), nil, nil
 		}),
 	)
