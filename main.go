@@ -6,6 +6,7 @@ import (
 
 	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/configs"
+	"github.com/xpzouying/xiaohongshu-mcp/cookies"
 )
 
 func main() {
@@ -31,6 +32,7 @@ func main() {
 	configs.SetBinPath(binPath)
 	configs.SetProfileDir(profileDir)
 	configs.SetProfilesBase(profilesBase)
+	cookies.SetProfilesBase(profilesBase)
 
 	// 初始化服务
 	xiaohongshuService := NewXiaohongshuService()

@@ -630,7 +630,9 @@ func saveCookiesForBot(page *rod.Page, botID string) error {
 		return err
 	}
 
-	cookieLoader := cookies.NewLoadCookie(cookies.GetCookiesFilePathForBot(botID))
+	cookiePath := cookies.GetCookiesFilePathForBot(botID)
+	logrus.Infof("saveCookiesForBot [%s]: writing to %s (%d bytes)", botID, cookiePath, len(data))
+	cookieLoader := cookies.NewLoadCookie(cookiePath)
 	return cookieLoader.SaveCookies(data)
 }
 
@@ -650,24 +652,30 @@ func withBrowserPageForBot(botID string, fn func(*rod.Page) error) error {
 	return fn(page)
 }
 
-// CheckBothLoginStatus 用单个 browser 同时检查主站 + 创作者平台登录状态
+// CheckBothLoginStatus 验证主站和创作者平台的 session 是否有效
+// 主站：导航到个人主页，URL 停在 /user/profile/ 则已登录
+// 创作者平台：调用 ListNotes，不报错则已登录
 func (s *XiaohongshuService) CheckBothLoginStatus(ctx context.Context, botID string) (mainOK bool, creatorOK bool) {
+	// 主站：导航验证
 	b := newBrowserForBot(botID)
 	defer b.Close()
-
 	page := b.NewPage()
 	defer page.Close()
 
-	// 主站和创作者平台共享 .xiaohongshu.com cookie，统一用 web_session 判断
-	cks, err := page.Browser().GetCookies()
-	if err == nil {
-		for _, c := range cks {
-			if c.Name == "web_session" && c.Value != "" {
-				mainOK = true
-				creatorOK = true
-				break
-			}
+	pp := page.Context(ctx).Timeout(30 * time.Second)
+	if err := pp.Navigate("https://www.xiaohongshu.com/user/profile/me"); err == nil {
+		_ = pp.WaitLoad()
+		time.Sleep(2 * time.Second)
+		if info, err := pp.Info(); err == nil {
+			logrus.Infof("CheckBothLoginStatus [%s] main URL: %s", botID, info.URL)
+			mainOK = !strings.Contains(info.URL, "/login") || strings.Contains(info.URL, "/captcha")
 		}
+	}
+
+	// 创作者平台：调用 ListNotes 验证
+	_, err := s.ListNotes(ctx, botID)
+	if err == nil {
+		creatorOK = true
 	}
 
 	return

@@ -44,6 +44,10 @@ if [ -n "$OLD_PID" ]; then
 fi
 if [ -x "$COMPLIANCE_BIN" ]; then
     echo "启动 compliance-mcp → :18090"
+    ANTHROPIC_BASE_URL=https://open.bigmodel.cn/api/coding/paas/v4 \
+    ANTHROPIC_API_KEY=3d7bc9d28c4342bba31bb0a3a5eb5df1.pQMPQvMP2xI2EKAJ \
+    ANTHROPIC_MODEL=glm-5-turbo \
+    LLM_API_TYPE=openai \
     setsid nohup "$COMPLIANCE_BIN" -port=:18090 > "${LOG_DIR}/compliance-mcp.log" 2>&1 &
 else
     echo "警告: compliance-mcp 二进制不存在: ${COMPLIANCE_BIN}"

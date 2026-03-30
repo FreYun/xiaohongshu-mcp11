@@ -83,11 +83,23 @@ func GetCookiesFilePath() string {
 	return "cookies.json"
 }
 
-// GetCookiesFilePathForBot 返回指定 bot 的 cookie 文件路径。
+// profilesBase 由 SetProfilesBase 设置，与启动参数 -profiles-base 一致
+var profilesBase string
+
+// SetProfilesBase 设置 profiles 根目录（由 main.go 调用）
+func SetProfilesBase(base string) {
+	profilesBase = base
+}
+
+// GetCookiesFilePathForBot 返回指定 bot 的 cookie 文件绝对路径。
+// 路径：{profilesBase}/cookies-{botID}.json（与 profile 目录平级，避免被 Chrome 清理）
 // botID 为空时 fallback 到全局 GetCookiesFilePath()。
 func GetCookiesFilePathForBot(botID string) string {
 	if botID == "" {
 		return GetCookiesFilePath()
 	}
-	return fmt.Sprintf("cookies-%s.json", botID)
+	if profilesBase == "" {
+		return fmt.Sprintf("cookies-%s.json", botID)
+	}
+	return filepath.Join(profilesBase, fmt.Sprintf("cookies-%s.json", botID))
 }
