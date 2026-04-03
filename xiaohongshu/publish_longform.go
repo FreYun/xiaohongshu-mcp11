@@ -46,6 +46,10 @@ func NewPublishLongformAction(page *rod.Page) (*PublishLongformAction, error) {
 	}
 	humanSleep(1 * time.Second)
 
+	if err := checkCreatorPageLogin(pp); err != nil {
+		return nil, err
+	}
+
 	// 点击「写长文」tab
 	if err := mustClickPublishTab(pp, "写长文"); err != nil {
 		return nil, errors.Wrap(err, "点击写长文 TAB 失败")

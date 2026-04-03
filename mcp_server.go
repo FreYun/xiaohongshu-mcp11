@@ -554,6 +554,22 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 		}),
 	)
 
+	// 工具: 内容分析数据
+	mcp.AddTool(server,
+		&mcp.Tool{
+			Name:        "get_notes_performance",
+			Description: "获取创作者中心内容分析数据（曝光、观看、封面点击率、点赞、评论、收藏、涨粉、分享、人均观看时长、弹幕）",
+			Annotations: &mcp.ToolAnnotations{
+				Title:        "Get Notes Performance",
+				ReadOnlyHint: true,
+			},
+		},
+		withPanicRecovery("get_notes_performance", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+			result := appServer.handleGetNotesPerformance(ctx, botID)
+			return convertToMCPResult(result), nil, nil
+		}),
+	)
+
 	// 工具 18: 管理笔记（删除/置顶）
 	mcp.AddTool(server,
 		&mcp.Tool{

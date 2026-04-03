@@ -46,6 +46,10 @@ func NewPublishTextImageAction(page *rod.Page) (*PublishTextImageAction, error) 
 	}
 	time.Sleep(1 * time.Second)
 
+	if err := checkCreatorPageLogin(pp); err != nil {
+		return nil, err
+	}
+
 	if err := mustClickPublishTab(pp, "上传图文"); err != nil {
 		return nil, errors.Wrap(err, "点击上传图文 TAB 失败")
 	}

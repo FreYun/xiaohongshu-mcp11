@@ -56,6 +56,11 @@ func NewPublishImageAction(page *rod.Page) (*PublishAction, error) {
 	}
 	time.Sleep(1 * time.Second)
 
+	// 检测是否被重定向到登录页（未登录时秒退，不卡 300s）
+	if err := checkCreatorPageLogin(pp); err != nil {
+		return nil, err
+	}
+
 	if err := mustClickPublishTab(pp, "上传图文"); err != nil {
 		logrus.Errorf("点击上传图文 TAB 失败: %v", err)
 		return nil, err

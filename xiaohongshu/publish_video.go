@@ -43,6 +43,10 @@ func NewPublishVideoAction(page *rod.Page) (*PublishAction, error) {
 	}
 	time.Sleep(1 * time.Second)
 
+	if err := checkCreatorPageLogin(pp); err != nil {
+		return nil, err
+	}
+
 	if err := mustClickPublishTab(pp, "上传视频"); err != nil {
 		return nil, errors.Wrap(err, "切换到上传视频失败")
 	}

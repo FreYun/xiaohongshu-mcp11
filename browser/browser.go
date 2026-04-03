@@ -127,6 +127,9 @@ func NewBrowser(headless bool, options ...Option) *Browser {
 func newBrowserWithProfile(headless bool, cfg *browserConfig) *Browser {
 	// 清理残留的 SingletonLock，防止上次 Chrome 异常退出后锁文件未释放
 	lockFile := filepath.Join(cfg.profileDir, "SingletonLock")
+	if _, err := os.Stat(lockFile); err == nil {
+		logrus.Warnf("profile mode [%s]: SingletonLock exists, removing (may indicate concurrent access or prior crash)", cfg.profileDir)
+	}
 	if err := os.Remove(lockFile); err == nil {
 		logrus.Info("profile mode: 已清理残留的 SingletonLock")
 	}

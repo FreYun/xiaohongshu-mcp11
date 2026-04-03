@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -51,6 +52,16 @@ func (n *NoteManageAction) navigateToNoteManager() error {
 		slog.Warn("等待 DOM 稳定", "error", err)
 	}
 	humanSleep(1 * time.Second)
+
+	// 检查是否被重定向到登录页面
+	info, err := page.Info()
+	if err == nil && info != nil {
+		url := info.URL
+		if strings.Contains(url, "/login") || strings.Contains(url, "redirectReason=401") {
+			return fmt.Errorf("创作者平台未登录（%s），主站 web_session 可能已失效", url)
+		}
+	}
+
 	return nil
 }
 

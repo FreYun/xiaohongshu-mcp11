@@ -59,22 +59,32 @@ func parseVisibility(args map[string]interface{}) string {
 func (s *AppServer) handleCheckLoginStatus(ctx context.Context, botID string) *MCPToolResult {
 	logrus.Infof("MCP [%s]: 检查登录状态", botID)
 
-	mainOK, creatorOK := s.xiaohongshuService.CheckBothLoginStatus(ctx, botID)
+	mainStatus, creatorOK := s.xiaohongshuService.CheckBothLoginStatus(ctx, botID)
 
-	mainIcon := "❌ 未登录"
-	if mainOK {
+	var mainIcon string
+	switch mainStatus {
+	case MainLoginOK:
 		mainIcon = "✅ 已登录"
+	case MainLoginCaptcha:
+		mainIcon = "⚠️ 已登录（captcha 拦截中，功能不受影响）"
+	default:
+		mainIcon = "❌ 未登录"
 	}
 	creatorIcon := "❌ 未登录"
 	if creatorOK {
 		creatorIcon = "✅ 已登录"
 	}
 
-	resultText := fmt.Sprintf("账号: %s\n主站: %s\n创作者平台: %s", configs.Username, mainIcon, creatorIcon)
+	displayName := botID
+	if displayName == "" {
+		displayName = configs.Username
+	}
+	resultText := fmt.Sprintf("账号: %s\n主站: %s\n创作者平台: %s", displayName, mainIcon, creatorIcon)
 
-	if !mainOK && !creatorOK {
+	mainLoggedIn := mainStatus == MainLoginOK || mainStatus == MainLoginCaptcha
+	if !mainLoggedIn && !creatorOK {
 		resultText += "\n\n请使用 get_both_login_qrcodes 同时获取两张二维码登录。"
-	} else if !mainOK {
+	} else if !mainLoggedIn {
 		resultText += "\n\n请使用 get_login_qrcode 扫码登录主站。"
 	} else if !creatorOK {
 		resultText += "\n\n请使用 get_creator_login_qrcode 扫码登录创作者平台。"
@@ -822,6 +832,29 @@ func (s *AppServer) handleListNotes(ctx context.Context, botID string) *MCPToolR
 	if err != nil {
 		return &MCPToolResult{
 			Content: []MCPContent{{Type: "text", Text: "获取笔记列表失败: " + err.Error()}},
+			IsError: true,
+		}
+	}
+
+	jsonData, err := json.MarshalIndent(notes, "", "  ")
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{Type: "text", Text: fmt.Sprintf("序列化失败: %v", err)}},
+			IsError: true,
+		}
+	}
+
+	return &MCPToolResult{Content: []MCPContent{{Type: "text", Text: string(jsonData)}}}
+}
+
+// handleGetNotesPerformance 获取内容分析数据
+func (s *AppServer) handleGetNotesPerformance(ctx context.Context, botID string) *MCPToolResult {
+	logrus.Infof("MCP [%s]: 获取内容分析数据", botID)
+
+	notes, err := s.xiaohongshuService.GetNotesPerformance(ctx, botID)
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{Type: "text", Text: "获取内容分析数据失败: " + err.Error()}},
 			IsError: true,
 		}
 	}
