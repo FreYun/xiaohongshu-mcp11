@@ -5,38 +5,54 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/go-rod/rod"
 	"github.com/go-rod/rod/lib/launcher"
 	"github.com/go-rod/rod/lib/proto"
 	"github.com/go-rod/stealth"
 	"github.com/sirupsen/logrus"
-	"github.com/xpzouying/headless_browser"
 	"github.com/xpzouying/xiaohongshu-mcp/cookies"
 )
 
-// Browser wraps headless_browser.Browser to provide a unified interface
+const (
+	closeTimeout = 10 * time.Second
+	defaultUA    = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+// Browser wraps rod.Browser + launcher to provide a unified interface
 // for both cookie-file mode and profile-dir mode.
 type Browser struct {
-	hb       *headless_browser.Browser // non-nil when using cookie-file mode
-	rod      *rod.Browser              // non-nil when using profile-dir mode
-	launcher *launcher.Launcher        // non-nil when using profile-dir mode
+	rod      *rod.Browser
+	launcher *launcher.Launcher
 }
 
 func (b *Browser) NewPage() *rod.Page {
-	if b.hb != nil {
-		return b.hb.NewPage()
-	}
 	return stealth.MustPage(b.rod)
 }
 
 func (b *Browser) Close() {
-	if b.hb != nil {
-		b.hb.Close()
-		return
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		defer func() {
+			if r := recover(); r != nil {
+				logrus.Warnf("Browser.Close() panicked: %v", r)
+			}
+		}()
+		_ = b.rod.Close()
+	}()
+
+	select {
+	case <-done:
+		// DevTools close succeeded, clean up launcher
+		b.launcher.Cleanup()
+	case <-time.After(closeTimeout):
+		// Chrome unresponsive — force kill
+		pid := b.launcher.PID()
+		logrus.Warnf("Browser.Close() timeout after %s, force killing Chrome (PID %d)", closeTimeout, pid)
+		b.launcher.Kill()
 	}
-	b.rod.MustClose()
-	b.launcher.Cleanup()
 }
 
 type browserConfig struct {
@@ -89,39 +105,36 @@ func NewBrowser(headless bool, options ...Option) *Browser {
 		opt(cfg)
 	}
 
-	// Profile-dir mode: use rod/launcher directly with UserDataDir
 	if cfg.profileDir != "" {
 		return newBrowserWithProfile(headless, cfg)
 	}
 
-	// Default mode: use headless_browser with cookie-file loading
-	opts := []headless_browser.Option{
-		headless_browser.WithHeadless(headless),
-	}
+	return newBrowserWithCookies(headless, cfg)
+}
+
+// newBrowserWithCookies creates a browser with cookie-file loading (no persistent profile).
+func newBrowserWithCookies(headless bool, cfg *browserConfig) *Browser {
+	l := launcher.New().
+		Headless(headless).
+		Set("--no-sandbox").
+		Set("user-agent", defaultUA)
+
 	if cfg.binPath != "" {
-		opts = append(opts, headless_browser.WithChromeBinPath(cfg.binPath))
+		l = l.Bin(cfg.binPath)
 	}
 
 	if proxy := os.Getenv("XHS_PROXY"); proxy != "" {
-		opts = append(opts, headless_browser.WithProxy(proxy))
+		l = l.Proxy(proxy)
 		logrus.Infof("Using proxy: %s", maskProxyCredentials(proxy))
 	}
 
-	// 加载 cookies
-	cookiePath := cfg.cookiePath
-	if cookiePath == "" {
-		cookiePath = cookies.GetCookiesFilePath()
-	}
-	cookieLoader := cookies.NewLoadCookie(cookiePath)
+	u := l.MustLaunch()
+	b := rod.New().ControlURL(u).MustConnect()
 
-	if data, err := cookieLoader.LoadCookies(); err == nil {
-		opts = append(opts, headless_browser.WithCookies(string(data)))
-		logrus.Debugf("loaded cookies from file successfully")
-	} else {
-		logrus.Warnf("failed to load cookies: %v", err)
-	}
+	// Inject cookies from file
+	injectCookiesFromFile(b, cfg.cookiePath)
 
-	return &Browser{hb: headless_browser.New(opts...)}
+	return &Browser{rod: b, launcher: l}
 }
 
 func newBrowserWithProfile(headless bool, cfg *browserConfig) *Browser {
@@ -161,8 +174,7 @@ func newBrowserWithProfile(headless bool, cfg *browserConfig) *Browser {
 	return &Browser{rod: b, launcher: l}
 }
 
-// injectCookiesFromFile 通过临时 page 将 cookies.json 注入浏览器。
-// Network.setCookies 是 page-level CDP 方法，不能在 browser target 上调用。
+// injectCookiesFromFile 通过 browser-level API 将 cookies.json 注入浏览器。
 // cookiePathOverride 不为空时使用该路径代替全局路径。
 func injectCookiesFromFile(b *rod.Browser, cookiePathOverride string) {
 	cookiePath := cookiePathOverride

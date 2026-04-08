@@ -59,14 +59,26 @@ func parseVisibility(args map[string]interface{}) string {
 func (s *AppServer) handleCheckLoginStatus(ctx context.Context, botID string) *MCPToolResult {
 	logrus.Infof("MCP [%s]: 检查登录状态", botID)
 
-	mainStatus, creatorOK := s.xiaohongshuService.CheckBothLoginStatus(ctx, botID)
+	mainStatus, creatorOK, err := s.xiaohongshuService.CheckBothLoginStatus(ctx, botID)
+	if err != nil {
+		return &MCPToolResult{
+			Content: []MCPContent{{
+				Type: "text",
+				Text: fmt.Sprintf("账号: %s\n⚠️ %v\n\n请稍后重试。", botID, err),
+			}},
+			IsError: true,
+		}
+	}
 
-	var mainIcon string
+	mainIcon := "❌ 未登录"
+	mainLoggedIn := false
 	switch mainStatus {
 	case MainLoginOK:
 		mainIcon = "✅ 已登录"
+		mainLoggedIn = true
 	case MainLoginCaptcha:
-		mainIcon = "⚠️ 已登录（captcha 拦截中，功能不受影响）"
+		mainIcon = "✅ 已登录"
+		mainLoggedIn = true
 	default:
 		mainIcon = "❌ 未登录"
 	}
@@ -81,7 +93,11 @@ func (s *AppServer) handleCheckLoginStatus(ctx context.Context, botID string) *M
 	}
 	resultText := fmt.Sprintf("账号: %s\n主站: %s\n创作者平台: %s", displayName, mainIcon, creatorIcon)
 
-	mainLoggedIn := mainStatus == MainLoginOK || mainStatus == MainLoginCaptcha
+	// captcha 信息放备注行，不影响主状态判断
+	if mainStatus == MainLoginCaptcha {
+		resultText += "\n⚠️ 主站访问触发 captcha 验证，cookie 有效，功能不受影响"
+	}
+
 	if !mainLoggedIn && !creatorOK {
 		resultText += "\n\n请使用 get_both_login_qrcodes 同时获取两张二维码登录。"
 	} else if !mainLoggedIn {

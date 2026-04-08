@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/proto"
 )
 
 const (
@@ -39,9 +40,85 @@ func NewNotesPerformanceAction(page *rod.Page) *NotesPerformanceAction {
 	return &NotesPerformanceAction{page: page}
 }
 
-// GetNotesPerformance 获取内容分析页面的笔记数据
+// parseTableRows 解析当前页面表格中的笔记数据
+const jsParseTableRows = `() => {
+	const notes = [];
+	const rows = document.querySelectorAll('table tbody tr');
+
+	rows.forEach(row => {
+		const cells = row.querySelectorAll('td');
+		if (cells.length < 5) return;
+
+		const infoCell = cells[0];
+		const fullText = (infoCell.textContent || '').trim();
+
+		let title = '', publishTime = '';
+		const timeMatch = fullText.match(/(发布于)?(\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2})/);
+		if (timeMatch) {
+			publishTime = timeMatch[2].trim();
+			title = fullText.substring(0, fullText.indexOf(timeMatch[0])).trim();
+		} else {
+			title = fullText.substring(0, 50);
+		}
+
+		const metrics = [];
+		for (let i = 1; i < cells.length; i++) {
+			let val = '';
+			const spans = cells[i].querySelectorAll('span, div, em');
+			if (spans.length > 0) {
+				for (const s of spans) {
+					const t = (s.textContent || '').trim();
+					if (t && /^[\d,.]+%?$/.test(t) || t === '-' || /^\d+[smh]$/.test(t)) {
+						val = t;
+						break;
+					}
+				}
+			}
+			if (!val) val = (cells[i].textContent || '').trim();
+			metrics.push(val);
+		}
+
+		if (title || publishTime) {
+			notes.push({
+				title: title,
+				publish_time: publishTime,
+				impressions:    metrics[0] || '-',
+				views:          metrics[1] || '-',
+				click_rate:     metrics[2] || '-',
+				likes:          metrics[3] || '-',
+				comments:       metrics[4] || '-',
+				favorites:      metrics[5] || '-',
+				new_followers:  metrics[6] || '-',
+				shares:         metrics[7] || '-',
+				avg_watch_time: metrics[8] || '-',
+				danmaku:        metrics[9] || '-',
+			});
+		}
+	});
+
+	return notes;
+}`
+
+// jsClickNextPage 点击下一页按钮，返回是否成功
+// 小红书创作者后台用 d-pagination-page 组件，页码按钮排列为 [← 1 2 3 4 →]
+// 最后一个 d-pagination-page 就是"下一页"箭头
+const jsClickNextPage = `() => {
+	const pages = document.querySelectorAll('.d-pagination-page');
+	if (pages.length < 3) return false;
+	// 最后一个是"下一页"箭头
+	const nextBtn = pages[pages.length - 1];
+	// 检查是否被禁用（第一个和最后一个可能是箭头）
+	if (nextBtn.classList.contains('disabled') || nextBtn.getAttribute('disabled') !== null) return false;
+	nextBtn.click();
+	return true;
+}`
+
+// maxNotesPerBot 每个 bot 最多采集的笔记数
+const maxNotesPerBot = 20
+
+// GetNotesPerformance 获取内容分析页面的笔记数据（最多 maxNotesPerBot 条，自动翻页）
 func (a *NotesPerformanceAction) GetNotesPerformance(ctx context.Context) ([]NotePerformance, error) {
-	a.page = a.page.Context(ctx).Timeout(60 * time.Second)
+	a.page = a.page.Context(ctx).Timeout(90 * time.Second)
 
 	slog.Info("导航到内容分析页面", "url", urlOfDataAnalysis)
 	if err := a.page.Navigate(urlOfDataAnalysis); err != nil {
@@ -60,73 +137,44 @@ func (a *NotesPerformanceAction) GetNotesPerformance(ctx context.Context) ([]Not
 		return nil, err
 	}
 
-	result, err := a.page.Eval(`() => {
-		const notes = [];
-		// 内容分析表格的每一行
-		const rows = document.querySelectorAll('table tbody tr');
-
-		rows.forEach(row => {
-			const cells = row.querySelectorAll('td');
-			if (cells.length < 5) return;
-
-			// 第一列：笔记基础信息（包含标题和发布时间）
-			const infoCell = cells[0];
-			const fullText = (infoCell.textContent || '').trim();
-
-			// 分离标题和发布时间：时间格式为 "发布于YYYY-MM-DD HH:MM" 或 "YYYY-MM-DD HH:MM"
-			let title = '', publishTime = '';
-			const timeMatch = fullText.match(/(发布于)?(\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2})/);
-			if (timeMatch) {
-				publishTime = timeMatch[2].trim();
-				title = fullText.substring(0, fullText.indexOf(timeMatch[0])).trim();
-			} else {
-				title = fullText.substring(0, 50);
-			}
-
-			// 剩余列：从第 1 列开始按顺序取数值
-			// 顺序：曝光、观看、封面点击率、点赞、评论、收藏、涨粉、分享、人均观看时长、弹幕
-			const metrics = [];
-			for (let i = 1; i < cells.length; i++) {
-				// 取 cell 里最深层的纯数字/百分比文本，跳过排序箭头等装饰
-				let val = '';
-				const spans = cells[i].querySelectorAll('span, div, em');
-				if (spans.length > 0) {
-					for (const s of spans) {
-						const t = (s.textContent || '').trim();
-						if (t && /^[\d,.]+%?$/.test(t) || t === '-' || /^\d+[smh]$/.test(t)) {
-							val = t;
-							break;
-						}
-					}
-				}
-				if (!val) val = (cells[i].textContent || '').trim();
-				metrics.push(val);
-			}
-
-			if (title || publishTime) {
-				notes.push({
-					title: title,
-					publish_time: publishTime,
-					impressions:    metrics[0] || '-',
-					views:          metrics[1] || '-',
-					click_rate:     metrics[2] || '-',
-					likes:          metrics[3] || '-',
-					comments:       metrics[4] || '-',
-					favorites:      metrics[5] || '-',
-					new_followers:  metrics[6] || '-',
-					shares:         metrics[7] || '-',
-					avg_watch_time: metrics[8] || '-',
-					danmaku:        metrics[9] || '-',
-				});
-			}
-		});
-
-		return notes;
-	}`)
+	// 抓第一页
+	result, err := a.page.Eval(jsParseTableRows)
 	if err != nil {
 		return nil, fmt.Errorf("获取内容分析数据失败: %w", err)
 	}
+	allNotes := parseNotesFromResult(result)
+	slog.Info("第一页笔记", "count", len(allNotes))
 
+	// 如果第一页不够 maxNotesPerBot 条，尝试翻页获取更多
+	if len(allNotes) >= 10 && len(allNotes) < maxNotesPerBot {
+		clicked, err := a.page.Eval(jsClickNextPage)
+		if err == nil && clicked.Value.Bool() {
+			slog.Info("点击下一页")
+			humanSleep(3 * time.Second)
+			if err := a.page.WaitDOMStable(time.Second, 0.1); err != nil {
+				slog.Warn("翻页后等待 DOM 稳定", "error", err)
+			}
+
+			result2, err := a.page.Eval(jsParseTableRows)
+			if err == nil {
+				page2Notes := parseNotesFromResult(result2)
+				slog.Info("第二页笔记", "count", len(page2Notes))
+				allNotes = append(allNotes, page2Notes...)
+			}
+		}
+	}
+
+	// 上限截断
+	if len(allNotes) > maxNotesPerBot {
+		allNotes = allNotes[:maxNotesPerBot]
+	}
+
+	slog.Info("内容分析采集完成", "total", len(allNotes))
+	return allNotes, nil
+}
+
+// parseNotesFromResult 从 JS Eval 结果解析笔记列表
+func parseNotesFromResult(result *proto.RuntimeRemoteObject) []NotePerformance {
 	var notes []NotePerformance
 	for _, v := range result.Value.Arr() {
 		notes = append(notes, NotePerformance{
@@ -144,6 +192,5 @@ func (a *NotesPerformanceAction) GetNotesPerformance(ctx context.Context) ([]Not
 			Danmaku:      v.Get("danmaku").String(),
 		})
 	}
-
-	return notes, nil
+	return notes
 }

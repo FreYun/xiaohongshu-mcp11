@@ -33,6 +33,15 @@ const (
 	circuitCooldown    = 2 * time.Minute // 熔断冷却期
 )
 
+// loginStatusCache check_login 的结果缓存，避免短时间内重复创建 Chrome
+type loginStatusCache struct {
+	mainStatus string
+	creatorOK  bool
+	cachedAt   time.Time
+}
+
+const loginCheckCooldown = 60 * time.Second // 同一 bot 60 秒内最多检查一次登录状态
+
 // XiaohongshuService 小红书业务服务
 type XiaohongshuService struct {
 	browserMu sync.Mutex             // 保护 botLocks map
@@ -40,13 +49,17 @@ type XiaohongshuService struct {
 
 	circuitMu sync.Mutex                    // 保护 circuits map
 	circuits  map[string]*botCircuitState   // per-bot 熔断器状态
+
+	loginCacheMu sync.Mutex                      // 保护 loginCache map
+	loginCache   map[string]*loginStatusCache     // per-bot 登录状态缓存
 }
 
 // NewXiaohongshuService 创建小红书服务实例
 func NewXiaohongshuService() *XiaohongshuService {
 	return &XiaohongshuService{
-		botLocks: make(map[string]*sync.Mutex),
-		circuits: make(map[string]*botCircuitState),
+		botLocks:   make(map[string]*sync.Mutex),
+		circuits:   make(map[string]*botCircuitState),
+		loginCache: make(map[string]*loginStatusCache),
 	}
 }
 
@@ -235,10 +248,13 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context, botID string)
 // GetLoginQrcode 获取登录的扫码二维码。
 // notifySession：可选，扫码成功保存 cookie 后通过 openclaw 向该 session 回传通知。
 func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context, botID string, notifySession string) (*LoginQrcodeResponse, error) {
-	b, err := s.newLockedBrowser(botID)
-	if err != nil {
+	// 熔断检查：快速失败，避免在系统异常时继续创建 Chrome 进程
+	if err := s.checkCircuit(botID); err != nil {
 		return nil, err
 	}
+	// 不用 newLockedBrowser：QR 等待扫码可能持续数分钟，不能持锁阻塞其他操作。
+	// 扫码使用独立浏览器会话，不与其他操作冲突。
+	b := newBrowserForBot(botID)
 	page := b.NewPage()
 
 	deferFunc := func() {
@@ -841,7 +857,22 @@ const (
 	MainLoginNo      = "not_logged_in" // 未登录
 )
 
-func (s *XiaohongshuService) CheckBothLoginStatus(ctx context.Context, botID string) (mainStatus string, creatorOK bool) {
+func (s *XiaohongshuService) CheckBothLoginStatus(ctx context.Context, botID string) (mainStatus string, creatorOK bool, err error) {
+	// 频率限制：同一 bot 60 秒内返回缓存结果，不创建 Chrome
+	s.loginCacheMu.Lock()
+	if cached, ok := s.loginCache[botID]; ok && time.Since(cached.cachedAt) < loginCheckCooldown {
+		s.loginCacheMu.Unlock()
+		logrus.Infof("CheckBothLoginStatus [%s]: 返回缓存结果（%s 前检查）", botID, time.Since(cached.cachedAt).Round(time.Second))
+		return cached.mainStatus, cached.creatorOK, nil
+	}
+	s.loginCacheMu.Unlock()
+
+	// 熔断检查：快速失败，避免在系统异常时继续创建 Chrome 进程
+	if err = s.checkCircuit(botID); err != nil {
+		mainStatus = MainLoginNo
+		return
+	}
+
 	// 手动加锁（不用 newLockedBrowser），因为需要连续创建两个浏览器
 	lock := s.getBotLock(botID)
 	lock.Lock()
@@ -854,10 +885,10 @@ func (s *XiaohongshuService) CheckBothLoginStatus(ctx context.Context, botID str
 	page := b.NewPage()
 
 	pp := page.Context(ctx).Timeout(30 * time.Second)
-	if err := pp.Navigate("https://www.xiaohongshu.com/user/profile/me"); err == nil {
+	if navErr := pp.Navigate("https://www.xiaohongshu.com/user/profile/me"); navErr == nil {
 		_ = pp.WaitLoad()
 		time.Sleep(2 * time.Second)
-		if info, err := pp.Info(); err == nil {
+		if info, infoErr := pp.Info(); infoErr == nil {
 			logrus.Infof("CheckBothLoginStatus [%s] main URL: %s", botID, info.URL)
 			url := info.URL
 			if strings.Contains(url, "/captcha") {
@@ -878,10 +909,24 @@ func (s *XiaohongshuService) CheckBothLoginStatus(ctx context.Context, botID str
 	b.Close()
 
 	// 创作者平台：调用 ListNotes 验证（锁已持有，用无锁版本）
-	_, err := s.listNotesLocked(ctx, botID)
-	if err == nil {
+	_, listErr := s.listNotesLocked(ctx, botID)
+	if listErr == nil {
 		creatorOK = true
 	}
+
+	// 注意：不记录熔断状态。"未登录"是正常的检查结果，不是浏览器故障。
+	// 如果这里也喂熔断器，连续几次 check_login 发现未登录就会触发熔断，
+	// 反而阻止后续的 get_login_qrcode 扫码登录。
+	// 熔断器由实际业务操作（SearchFeeds、PublishContent 等）驱动即可。
+
+	// 缓存结果，60 秒内不再重复检查
+	s.loginCacheMu.Lock()
+	s.loginCache[botID] = &loginStatusCache{
+		mainStatus: mainStatus,
+		creatorOK:  creatorOK,
+		cachedAt:   time.Now(),
+	}
+	s.loginCacheMu.Unlock()
 
 	return
 }
@@ -942,10 +987,12 @@ func (s *XiaohongshuService) CheckCreatorLoginStatus(ctx context.Context, botID 
 
 // GetCreatorLoginQrcode 获取创作者平台登录二维码
 func (s *XiaohongshuService) GetCreatorLoginQrcode(ctx context.Context, botID string, notifySession string) (*LoginQrcodeResponse, error) {
-	b, err := s.newLockedBrowser(botID)
-	if err != nil {
+	// 熔断检查：快速失败，避免在系统异常时继续创建 Chrome 进程
+	if err := s.checkCircuit(botID); err != nil {
 		return nil, err
 	}
+	// 不用 newLockedBrowser：QR 等待扫码可能持续数分钟，不能持锁阻塞其他操作。
+	b := newBrowserForBot(botID)
 	page := b.NewPage()
 
 	deferFunc := func() {

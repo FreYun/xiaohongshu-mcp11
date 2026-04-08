@@ -218,6 +218,10 @@ func uploadImages(page *rod.Page, imagesPaths []string) error {
 		logrus.Infof("获取有效图片：%s", path)
 	}
 
+	if len(validPaths) == 0 {
+		return errors.Errorf("没有有效的图片文件可上传（共 %d 个路径均不存在）", len(imagesPaths))
+	}
+
 	// 逐张上传：每张上传后等待预览出现，再上传下一张
 	for i, path := range validPaths {
 		selector := `input[type="file"]`

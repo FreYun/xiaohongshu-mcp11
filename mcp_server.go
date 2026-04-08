@@ -190,7 +190,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "check_login_status",
-			Description: "检查小红书登录状态",
+			Description: "检查小红书登录状态。⏱ 建议 timeout ≥ 120s（需启动浏览器并导航两个平台）",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Check Login Status",
 				ReadOnlyHint: true,
@@ -206,7 +206,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_login_qrcode",
-			Description: "获取登录二维码（返回 Base64 图片和超时时间）",
+			Description: "获取登录二维码（返回 Base64 图片和超时时间）。⏱ 建议 timeout ≥ 120s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Login QR Code",
 				ReadOnlyHint: true,
@@ -238,7 +238,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "publish_content",
-			Description: "发布小红书图文内容",
+			Description: "发布小红书图文内容。⏱ 建议 timeout ≥ 180s（含图片上传和页面操作）。未登录时会快速返回错误",
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Publish Content",
 				DestructiveHint: boolPtr(true),
@@ -279,7 +279,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "list_feeds",
-			Description: "获取首页 Feeds 列表",
+			Description: "获取首页 Feeds 列表。⏱ 建议 timeout ≥ 60s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "List Feeds",
 				ReadOnlyHint: true,
@@ -295,7 +295,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "search_feeds",
-			Description: "搜索小红书内容（需要已登录）",
+			Description: "搜索小红书内容（需要已登录）。⏱ 建议 timeout ≥ 60s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Search Feeds",
 				ReadOnlyHint: true,
@@ -311,7 +311,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_feed_detail",
-			Description: "获取小红书笔记详情，返回笔记内容、图片、作者信息、互动数据（点赞/收藏/分享数）及评论列表。默认返回前10条一级评论，如需更多评论请设置load_all_comments=true",
+			Description: "获取小红书笔记详情，返回笔记内容、图片、作者信息、互动数据（点赞/收藏/分享数）及评论列表。默认返回前10条一级评论，如需更多评论请设置load_all_comments=true。⏱ 建议 timeout ≥ 120s（加载评论时更久）",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Feed Detail",
 				ReadOnlyHint: true,
@@ -356,7 +356,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "user_profile",
-			Description: "获取指定的小红书用户主页，返回用户基本信息，关注、粉丝、获赞量及其笔记内容",
+			Description: "获取指定的小红书用户主页，返回用户基本信息，关注、粉丝、获赞量及其笔记内容。⏱ 建议 timeout ≥ 60s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "User Profile",
 				ReadOnlyHint: true,
@@ -376,7 +376,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "post_comment_to_feed",
-			Description: "发表评论到小红书笔记",
+			Description: "发表评论到小红书笔记。⏱ 建议 timeout ≥ 60s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Post Comment",
 				DestructiveHint: boolPtr(true),
@@ -397,7 +397,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "reply_comment_in_feed",
-			Description: "回复小红书笔记下的指定评论",
+			Description: "回复小红书笔记下的指定评论。⏱ 建议 timeout ≥ 60s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Reply Comment",
 				DestructiveHint: boolPtr(true),
@@ -427,7 +427,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "publish_with_video",
-			Description: "发布小红书视频内容（仅支持本地单个视频文件）",
+			Description: "发布小红书视频内容（仅支持本地单个视频文件）。⏱ 建议 timeout ≥ 180s。未登录时会快速返回错误",
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Publish Video",
 				DestructiveHint: boolPtr(true),
@@ -452,7 +452,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "like_feed",
-			Description: "为指定笔记点赞或取消点赞（如已点赞将跳过点赞，如未点赞将跳过取消点赞）",
+			Description: "为指定笔记点赞或取消点赞（如已点赞将跳过点赞，如未点赞将跳过取消点赞）。⏱ 建议 timeout ≥ 60s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Like Feed",
 				DestructiveHint: boolPtr(true),
@@ -473,7 +473,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "favorite_feed",
-			Description: "收藏指定笔记或取消收藏（如已收藏将跳过收藏，如未收藏将跳过取消收藏）",
+			Description: "收藏指定笔记或取消收藏（如已收藏将跳过收藏，如未收藏将跳过取消收藏）。⏱ 建议 timeout ≥ 60s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Favorite Feed",
 				DestructiveHint: boolPtr(true),
@@ -494,7 +494,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_both_login_qrcodes",
-			Description: "同时获取主站和创作者平台的登录二维码（两个都未登录时使用，避免锁冲突）",
+			Description: "同时获取主站和创作者平台的登录二维码（两个都未登录时使用，避免锁冲突）。⏱ 建议 timeout ≥ 120s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Both Login QR Codes",
 				ReadOnlyHint: true,
@@ -510,7 +510,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_creator_login_qrcode",
-			Description: "获取创作者平台登录二维码（仅创作者平台未登录时使用）",
+			Description: "获取创作者平台登录二维码（仅创作者平台未登录时使用）。⏱ 建议 timeout ≥ 120s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Creator Login QR Code",
 				ReadOnlyHint: true,
@@ -526,7 +526,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_creator_home",
-			Description: "获取创作者后台首页信息：昵称、账号号码、关注/粉丝/获赞收藏数、近7天数据总览",
+			Description: "获取创作者后台首页信息：昵称、账号号码、关注/粉丝/获赞收藏数、近7天数据总览。⏱ 建议 timeout ≥ 60s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Creator Home",
 				ReadOnlyHint: true,
@@ -542,7 +542,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "list_notes",
-			Description: "列出创作者后台笔记管理页的所有笔记，返回笔记ID、标题及统计数据（👁浏览/💬评论/❤️点赞/⭐收藏/🔄转发）",
+			Description: "列出创作者后台笔记管理页的所有笔记，返回笔记ID、标题及统计数据（👁浏览/💬评论/❤️点赞/⭐收藏/🔄转发）。⏱ 建议 timeout ≥ 60s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "List Notes",
 				ReadOnlyHint: true,
@@ -558,7 +558,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_notes_performance",
-			Description: "获取创作者中心内容分析数据（曝光、观看、封面点击率、点赞、评论、收藏、涨粉、分享、人均观看时长、弹幕）",
+			Description: "获取创作者中心内容分析数据（曝光、观看、封面点击率、点赞、评论、收藏、涨粉、分享、人均观看时长、弹幕）。⏱ 建议 timeout ≥ 60s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Notes Performance",
 				ReadOnlyHint: true,
@@ -574,7 +574,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "manage_note",
-			Description: "管理笔记：删除(delete)或置顶(pin)。需先用 list_notes 获取 feed_id",
+			Description: "管理笔记：删除(delete)或置顶(pin)。需先用 list_notes 获取 feed_id。⏱ 建议 timeout ≥ 60s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Manage Note",
 				DestructiveHint: boolPtr(true),
@@ -590,7 +590,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "publish_longform",
-			Description: "发布小红书长文内容（写长文 → 一键排版 → 发布）",
+			Description: "发布小红书长文内容（写长文 → 一键排版 → 发布）。⏱ 建议 timeout ≥ 180s。未登录时会快速返回错误",
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Publish Longform",
 				DestructiveHint: boolPtr(true),
@@ -606,7 +606,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "get_notification_comments",
-			Description: "获取通知页「评论和@」列表，返回评论内容、用户名、时间等",
+			Description: "获取通知页「评论和@」列表，返回评论内容、用户名、时间等。⏱ 建议 timeout ≥ 60s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:        "Get Notification Comments",
 				ReadOnlyHint: true,
@@ -622,7 +622,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	mcp.AddTool(server,
 		&mcp.Tool{
 			Name:        "reply_notification_comment",
-			Description: "在通知页回复指定评论，需先用 get_notification_comments 获取列表，再传 comment_index",
+			Description: "在通知页回复指定评论，需先用 get_notification_comments 获取列表，再传 comment_index。⏱ 建议 timeout ≥ 60s",
 			Annotations: &mcp.ToolAnnotations{
 				Title:           "Reply Notification Comment",
 				DestructiveHint: boolPtr(true),
