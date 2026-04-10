@@ -169,104 +169,88 @@ func findCommentElement(page *rod.Page, commentID, userID string) (*rod.Element,
 
 	logrus.Infof("开始循环查找，最大尝试次数: %d", maxAttempts)
 
+	// DEBUG: 打印前几个评论元素的实际属性，帮助定位选择器
+	debugResult, debugErr := page.Eval(`() => {
+		const comments = document.querySelectorAll('.parent-comment, .comment-item, [id*="comment"]');
+		const info = [];
+		comments.forEach((el, i) => {
+			if (i < 6) {
+				info.push({
+					tag: el.tagName,
+					id: el.id || '',
+					classes: String(el.className || '').substring(0, 80),
+					dataAttrs: Object.keys(el.dataset || {}).map(k => k + '=' + String(el.dataset[k]).substring(0, 40)),
+					outerStart: el.outerHTML.substring(0, 200)
+				});
+			}
+		});
+		return JSON.stringify(info);
+	}`)
+	if debugErr == nil {
+		logrus.Infof("DEBUG 评论元素结构: %s", debugResult.Value.Str())
+	} else {
+		logrus.Warnf("DEBUG 评论元素检查失败: %v", debugErr)
+	}
+
 	for attempt := 0; attempt < maxAttempts; attempt++ {
 		logrus.Infof("=== 查找尝试 %d/%d ===", attempt+1, maxAttempts)
 
-		// === 1. 检查是否到达底部 ===
-		if checkEndContainer(page) {
-			logrus.Info("已到达评论底部，未找到目标评论")
-			break
-		}
-
-		// === 2. 获取当前评论数量 ===
-		currentCount := getCommentCount(page)
-		logrus.Infof("当前评论数: %d", currentCount)
-		
-		if currentCount != lastCommentCount {
-			logrus.Infof("✓ 评论数增加: %d -> %d", lastCommentCount, currentCount)
-			lastCommentCount = currentCount
-			stagnantChecks = 0
-		} else {
-			stagnantChecks++
-			if stagnantChecks%5 == 0 {
-				logrus.Infof("评论数停滞 %d 次", stagnantChecks)
-			}
-		}
-
-		// === 3. 停滞检测 ===
-		if stagnantChecks >= 10 {
-			logrus.Info("评论数量停滞超过10次，可能已加载完所有评论")
-			break
-		}
-
-		// === 4. 先滚动到最后一个评论（触发懒加载）===
-		if currentCount > 0 {
-			logrus.Infof("滚动到最后一个评论（共 %d 条）", currentCount)
-			
-			// 使用 Go 获取所有评论元素
-			elements, err := page.Timeout(2 * time.Second).Elements(".parent-comment, .comment-item, .comment")
-			if err == nil && len(elements) > 0 {
-				// 滚动到最后一个评论
-				lastComment := elements[len(elements)-1]
-				err := lastComment.ScrollIntoView()
-				if err != nil {
-					logrus.Warnf("滚动到最后一个评论失败: %v", err)
-				}
-			} else {
-				logrus.Warnf("未找到评论元素: %v", err)
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
-
-		// === 5. 继续向下滚动 ===
-		logrus.Infof("继续向下滚动...")
-		_, err := page.Eval(`() => { window.scrollBy(0, window.innerHeight * 0.8); return true; }`)
-		if err != nil {
-			logrus.Warnf("滚动失败: %v", err)
-		}
-		time.Sleep(500 * time.Millisecond)
-
-		// === 6. 滚动后立即查找（边滚动边查找）===
-		// 优先通过 commentID 查找（使用 Timeout 避免长时间等待）
+		// === 1. 先尝试查找目标评论（优先于任何退出判断）===
 		if commentID != "" {
 			selector := fmt.Sprintf("#comment-%s", commentID)
-			logrus.Infof("尝试通过 commentID 查找: %s", selector)
-			
-			// 使用 Timeout 避免长时间等待
 			el, err := page.Timeout(2 * time.Second).Element(selector)
 			if err == nil && el != nil {
 				logrus.Infof("✓ 通过 commentID 找到评论: %s (尝试 %d 次)", commentID, attempt+1)
 				return el, nil
 			}
-			logrus.Infof("未找到 commentID (2秒超时)")
 		}
 
 		// 通过 userID 查找
-		if userID != "" {
-			logrus.Infof("尝试通过 userID 查找: %s", userID)
-			
-			// 使用 Timeout 避免长时间等待
-			elements, err := page.Timeout(2 * time.Second).Elements(".comment-item, .comment, .parent-comment")
-			if err == nil && len(elements) > 0 {
-				logrus.Infof("找到 %d 个评论元素", len(elements))
-				for i, el := range elements {
-					// 快速检查，不等待
+		if userID != "" && commentID == "" {
+			elements, err := page.Timeout(2 * time.Second).Elements(".comment-item")
+			if err == nil {
+				for _, el := range elements {
 					userEl, err := el.Timeout(500 * time.Millisecond).Element(fmt.Sprintf(`[data-user-id="%s"]`, userID))
 					if err == nil && userEl != nil {
-						logrus.Infof("✓ 通过 userID 在第 %d 个元素中找到评论: %s (尝试 %d 次)", i+1, userID, attempt+1)
+						logrus.Infof("✓ 通过 userID 找到评论 (尝试 %d 次)", attempt+1)
 						return el, nil
 					}
 				}
-				logrus.Infof("在 %d 个元素中未找到匹配的 userID", len(elements))
-			} else {
-				logrus.Infof("获取评论元素失败或超时: %v", err)
 			}
 		}
-		
-		logrus.Infof("本次尝试未找到目标评论，继续下一轮...")
 
-		// === 7. 等待内容加载 ===
-		time.Sleep(scrollInterval)
+		// === 2. 没找到，检查是否到底 ===
+		if attempt > 3 && checkEndContainer(page) {
+			logrus.Info("已到达评论底部且未找到目标评论")
+			break
+		}
+
+		// === 3. 获取当前评论数量 ===
+		currentCount := getCommentCount(page)
+		if currentCount != lastCommentCount {
+			lastCommentCount = currentCount
+			stagnantChecks = 0
+		} else {
+			stagnantChecks++
+		}
+
+		// === 4. 停滞检测 ===
+		if stagnantChecks >= 15 {
+			logrus.Infof("评论数量停滞超过15次 (当前 %d 条)，放弃查找", currentCount)
+			break
+		}
+
+		// === 5. 滚动加载更多评论 ===
+		_, err := page.Eval(`() => {
+			const container = document.querySelector('.note-scroller') || document.querySelector('.interaction-container');
+			if (container) { container.scrollBy(0, 500); }
+			else { window.scrollBy(0, window.innerHeight * 0.8); }
+			return true;
+		}`)
+		if err != nil {
+			logrus.Warnf("滚动失败: %v", err)
+		}
+		time.Sleep(800 * time.Millisecond)
 	}
 
 	return nil, fmt.Errorf("未找到评论 (commentID: %s, userID: %s), 尝试次数: %d", commentID, userID, maxAttempts)

@@ -166,11 +166,12 @@ func NewSearchAction(page *rod.Page) *SearchAction {
 }
 
 func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...FilterOption) ([]Feed, error) {
+	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
 	page := s.page.Context(ctx)
 
 	searchURL := makeSearchURL(keyword)
-	page.MustNavigate(searchURL)
-	page.MustWaitStable()
+	page.MustNavigate(searchURL).MustWaitLoad()
 
 	page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
 
@@ -208,9 +209,8 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 			option.MustClick()
 		}
 
-		// 等待页面更新
-		page.MustWaitStable()
-		// 重新等待 __INITIAL_STATE__ 更新
+		// 等待筛选后页面更新
+		time.Sleep(2 * time.Second)
 		page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
 	}
 

@@ -31,35 +31,28 @@ type botCircuitState struct {
 const (
 	circuitMaxFailures = 3               // 连续失败 N 次后触发熔断
 	circuitCooldown    = 2 * time.Minute // 熔断冷却期
+
+	browserMaxConcurrent = 3                 // 全局最多同时运行的 Chrome 数量
+	browserQueueTimeout  = 4 * time.Minute   // 排队等待超时
 )
-
-// loginStatusCache check_login 的结果缓存，避免短时间内重复创建 Chrome
-type loginStatusCache struct {
-	mainStatus string
-	creatorOK  bool
-	cachedAt   time.Time
-}
-
-const loginCheckCooldown = 60 * time.Second // 同一 bot 60 秒内最多检查一次登录状态
 
 // XiaohongshuService 小红书业务服务
 type XiaohongshuService struct {
 	browserMu sync.Mutex             // 保护 botLocks map
 	botLocks  map[string]*sync.Mutex // per-bot 浏览器锁，防止同一 bot 并发创建 Chrome 实例
+	browserSem chan struct{}          // 全局 Chrome 并发信号量
 
 	circuitMu sync.Mutex                    // 保护 circuits map
 	circuits  map[string]*botCircuitState   // per-bot 熔断器状态
 
-	loginCacheMu sync.Mutex                      // 保护 loginCache map
-	loginCache   map[string]*loginStatusCache     // per-bot 登录状态缓存
 }
 
 // NewXiaohongshuService 创建小红书服务实例
 func NewXiaohongshuService() *XiaohongshuService {
 	return &XiaohongshuService{
 		botLocks:   make(map[string]*sync.Mutex),
+		browserSem: make(chan struct{}, browserMaxConcurrent),
 		circuits:   make(map[string]*botCircuitState),
-		loginCache: make(map[string]*loginStatusCache),
 	}
 }
 
@@ -298,16 +291,44 @@ func (s *XiaohongshuService) GetLoginQrcode(ctx context.Context, botID string, n
 				deferFunc()
 			}()
 
-			if loginAction.WaitForLogin(ctxTimeout) {
-				logrus.Info("main login: WaitForLogin returned true, saving cookies")
-				if er := saveCookiesForBot(page, botID); er != nil {
-					logrus.Errorf("failed to save cookies: %v", er)
-				} else {
-					logrus.Info("main login: cookies saved successfully")
-					notifyLoginSuccess(notifySession, "main")
+			// 记录初始 web_session，检测变化即保存
+			initialWebSession := ""
+			if cks, err := page.Browser().GetCookies(); err == nil {
+				for _, c := range cks {
+					if c.Name == "web_session" {
+						initialWebSession = c.Value
+						break
+					}
 				}
-			} else {
-				logrus.Warn("main login: WaitForLogin timed out or cancelled")
+			}
+			logrus.Infof("main login: watching cookies, initialWebSession empty=%v", initialWebSession == "")
+
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+
+			for {
+				select {
+				case <-ctxTimeout.Done():
+					logrus.Info("main login: timeout, 未登录不保存 cookie")
+					return
+				case <-ticker.C:
+					cks, err := page.Browser().GetCookies()
+					if err != nil {
+						continue
+					}
+					for _, c := range cks {
+						if c.Name == "web_session" && c.Value != "" && c.Value != initialWebSession {
+							logrus.Infof("main login: new web_session detected, saving cookies")
+							if er := saveCookiesForBot(page, botID); er != nil {
+								logrus.Errorf("main login: save cookies failed: %v", er)
+							} else {
+								logrus.Info("main login: cookies saved successfully")
+								notifyLoginSuccess(notifySession, "main")
+							}
+							return
+						}
+					}
+				}
 			}
 		}()
 	}
@@ -786,13 +807,22 @@ func (lb *lockedBrowser) RecordFailure() {
 	lb.service.recordBrowserFailure(lb.botID)
 }
 
-// newLockedBrowser 创建带 per-bot 锁和熔断检查的浏览器实例。
+// newLockedBrowser 创建带 per-bot 锁、全局并发限制和熔断检查的浏览器实例。
 // 如果该 bot 的熔断器已打开（连续失败过多），立即返回错误而不创建 Chrome 进程。
-// 调用方必须 defer b.Close() 来释放锁。
+// 如果全局 Chrome 数量已满，排队等待最多 browserQueueTimeout。
+// 调用方必须 defer b.Close() 来释放锁和信号量。
 func (s *XiaohongshuService) newLockedBrowser(botID string) (*lockedBrowser, error) {
 	// 熔断检查：快速失败，避免在系统异常时继续创建 Chrome 进程
 	if err := s.checkCircuit(botID); err != nil {
 		return nil, err
+	}
+
+	// 全局并发限制：最多 browserMaxConcurrent 个 Chrome 同时运行
+	select {
+	case s.browserSem <- struct{}{}:
+		// 获得令牌
+	case <-time.After(browserQueueTimeout):
+		return nil, fmt.Errorf("浏览器排队超时（%s），当前已有 %d 个 Chrome 在运行", browserQueueTimeout, browserMaxConcurrent)
 	}
 
 	lock := s.getBotLock(botID)
@@ -802,7 +832,10 @@ func (s *XiaohongshuService) newLockedBrowser(botID string) (*lockedBrowser, err
 		Browser: b,
 		botID:   botID,
 		service: s,
-		unlock:  lock.Unlock,
+		unlock: func() {
+			lock.Unlock()
+			<-s.browserSem // 归还令牌
+		},
 	}, nil
 }
 
@@ -858,17 +891,18 @@ const (
 )
 
 func (s *XiaohongshuService) CheckBothLoginStatus(ctx context.Context, botID string) (mainStatus string, creatorOK bool, err error) {
-	// 频率限制：同一 bot 60 秒内返回缓存结果，不创建 Chrome
-	s.loginCacheMu.Lock()
-	if cached, ok := s.loginCache[botID]; ok && time.Since(cached.cachedAt) < loginCheckCooldown {
-		s.loginCacheMu.Unlock()
-		logrus.Infof("CheckBothLoginStatus [%s]: 返回缓存结果（%s 前检查）", botID, time.Since(cached.cachedAt).Round(time.Second))
-		return cached.mainStatus, cached.creatorOK, nil
-	}
-	s.loginCacheMu.Unlock()
-
 	// 熔断检查：快速失败，避免在系统异常时继续创建 Chrome 进程
 	if err = s.checkCircuit(botID); err != nil {
+		mainStatus = MainLoginNo
+		return
+	}
+
+	// 全局并发限制
+	select {
+	case s.browserSem <- struct{}{}:
+		defer func() { <-s.browserSem }()
+	case <-time.After(browserQueueTimeout):
+		err = fmt.Errorf("浏览器排队超时（%s）", browserQueueTimeout)
 		mainStatus = MainLoginNo
 		return
 	}
@@ -918,15 +952,6 @@ func (s *XiaohongshuService) CheckBothLoginStatus(ctx context.Context, botID str
 	// 如果这里也喂熔断器，连续几次 check_login 发现未登录就会触发熔断，
 	// 反而阻止后续的 get_login_qrcode 扫码登录。
 	// 熔断器由实际业务操作（SearchFeeds、PublishContent 等）驱动即可。
-
-	// 缓存结果，60 秒内不再重复检查
-	s.loginCacheMu.Lock()
-	s.loginCache[botID] = &loginStatusCache{
-		mainStatus: mainStatus,
-		creatorOK:  creatorOK,
-		cachedAt:   time.Now(),
-	}
-	s.loginCacheMu.Unlock()
 
 	return
 }
@@ -1067,6 +1092,7 @@ func (s *XiaohongshuService) GetCreatorLoginQrcode(ctx context.Context, botID st
 		for {
 			select {
 			case <-ctxTimeout.Done():
+				logrus.Info("creator login: timeout, 未登录不保存 cookie")
 				return
 			case <-ticker.C:
 				info, err := pp.Info()

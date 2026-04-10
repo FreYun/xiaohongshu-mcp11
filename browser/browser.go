@@ -2,6 +2,7 @@ package browser
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -32,25 +33,44 @@ func (b *Browser) NewPage() *rod.Page {
 }
 
 func (b *Browser) Close() {
-	done := make(chan struct{})
+	pid := b.launcher.PID()
+	logrus.Infof("Browser.Close() called for Chrome PID %d", pid)
+
+	// Step 1: try graceful DevTools close with timeout
+	closeDone := make(chan error, 1)
 	go func() {
-		defer close(done)
 		defer func() {
 			if r := recover(); r != nil {
 				logrus.Warnf("Browser.Close() panicked: %v", r)
+				closeDone <- fmt.Errorf("panic: %v", r)
 			}
 		}()
-		_ = b.rod.Close()
+		closeDone <- b.rod.Close()
+	}()
+
+	var closeErr error
+	select {
+	case closeErr = <-closeDone:
+		if closeErr != nil {
+			logrus.Warnf("rod.Close() error for PID %d: %v", pid, closeErr)
+		}
+	case <-time.After(closeTimeout):
+		logrus.Warnf("rod.Close() timed out for PID %d", pid)
+	}
+
+	// Step 2: wait briefly for Chrome process to actually exit
+	exitDone := make(chan struct{})
+	go func() {
+		defer close(exitDone)
+		b.launcher.Cleanup()
 	}()
 
 	select {
-	case <-done:
-		// DevTools close succeeded, clean up launcher
-		b.launcher.Cleanup()
-	case <-time.After(closeTimeout):
-		// Chrome unresponsive — force kill
-		pid := b.launcher.PID()
-		logrus.Warnf("Browser.Close() timeout after %s, force killing Chrome (PID %d)", closeTimeout, pid)
+	case <-exitDone:
+		logrus.Infof("Chrome PID %d exited cleanly", pid)
+		return
+	case <-time.After(5 * time.Second):
+		logrus.Warnf("Chrome PID %d did not exit after 5s, force killing", pid)
 		b.launcher.Kill()
 	}
 }
@@ -150,7 +170,11 @@ func newBrowserWithProfile(headless bool, cfg *browserConfig) *Browser {
 	l := launcher.New().
 		Headless(headless).
 		UserDataDir(cfg.profileDir).
-		Set("--no-sandbox")
+		Set("--no-sandbox").
+		Set("--disable-session-crashed-bubble").
+		Set("--hide-crash-restore-bubble").
+		Set("--no-first-run").
+		Set("--disable-features", "SessionRestore")
 
 	if cfg.binPath != "" {
 		l = l.Bin(cfg.binPath)

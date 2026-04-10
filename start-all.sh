@@ -18,6 +18,8 @@ LOG_DIR="/tmp"
 HEADLESS="${1:---headless=true}"
 COMPLIANCE_BIN="/home/rooot/MCP/compliance-mcp/compliance-mcp"
 IMAGE_GEN_DIR="/home/rooot/MCP/image-gen-mcp"
+TOUGU_DIR="/home/rooot/MCP/tougu-portfolio-mcp"
+TOUGU_PORT=18070
 XHS_PORT=18060
 PROFILES_BASE="/home/rooot/.xhs-profiles"
 
@@ -51,6 +53,20 @@ if [ -x "$COMPLIANCE_BIN" ]; then
     setsid nohup "$COMPLIANCE_BIN" -port=:18090 > "${LOG_DIR}/compliance-mcp.log" 2>&1 &
 else
     echo "警告: compliance-mcp 二进制不存在: ${COMPLIANCE_BIN}"
+fi
+
+# 启动 tougu-portfolio-mcp（投顾组合管理服务，端口 18070）
+OLD_PID=$(lsof -ti:${TOUGU_PORT} 2>/dev/null || true)
+if [ -n "$OLD_PID" ]; then
+    echo "停止 tougu-portfolio-mcp 旧进程 (PID: ${OLD_PID})"
+    kill "$OLD_PID" 2>/dev/null || true
+    sleep 0.5
+fi
+if [ -d "$TOUGU_DIR" ]; then
+    echo "启动 tougu-portfolio-mcp → :${TOUGU_PORT}"
+    setsid nohup python3 "${TOUGU_DIR}/server.py" --transport streamable-http --port ${TOUGU_PORT} > "${LOG_DIR}/tougu-mcp.log" 2>&1 &
+else
+    echo "警告: tougu-portfolio-mcp 目录不存在: ${TOUGU_DIR}"
 fi
 
 # 确保 Xvfb 虚拟显示器在运行（有头模式需要）
@@ -105,6 +121,18 @@ if curl -sf "http://localhost:18090/health" > /dev/null 2>&1; then
     OK=$((OK + 1))
 else
     echo "  FAIL compliance-mcp :18090"
+    FAIL=$((FAIL + 1))
+fi
+
+# tougu-portfolio-mcp 用 MCP initialize 探测
+if curl -sf -X POST http://localhost:${TOUGU_PORT}/mcp \
+    -H 'Content-Type: application/json' \
+    -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2024-11-05","capabilities":{},"clientInfo":{"name":"health","version":"1"}}}' \
+    -o /dev/null 2>/dev/null; then
+    echo "  OK  tougu-portfolio-mcp :${TOUGU_PORT}"
+    OK=$((OK + 1))
+else
+    echo "  FAIL tougu-portfolio-mcp :${TOUGU_PORT}"
     FAIL=$((FAIL + 1))
 fi
 
