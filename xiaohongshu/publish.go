@@ -584,6 +584,12 @@ func findTextboxParent(elem *rod.Element) *rod.Element {
 // isElementVisible 检查元素是否可见
 func isElementVisible(elem *rod.Element) bool {
 
+	// 检查 aria-hidden（XHS 埋点元素会用这个标记）
+	ariaHidden, err := elem.Attribute("aria-hidden")
+	if err == nil && ariaHidden != nil && *ariaHidden == "true" {
+		return false
+	}
+
 	// 检查是否有隐藏样式
 	style, err := elem.Attribute("style")
 	if err == nil && style != nil {
@@ -593,7 +599,10 @@ func isElementVisible(elem *rod.Element) bool {
 			strings.Contains(styleStr, "top: -9999px") ||
 			strings.Contains(styleStr, "position: absolute; left: -9999px") ||
 			strings.Contains(styleStr, "display: none") ||
-			strings.Contains(styleStr, "visibility: hidden") {
+			strings.Contains(styleStr, "visibility: hidden") ||
+			strings.Contains(styleStr, "opacity: 1e-05") ||
+			strings.Contains(styleStr, "opacity: 0.00001") ||
+			strings.Contains(styleStr, "z-index: -1") {
 			return false
 		}
 	}

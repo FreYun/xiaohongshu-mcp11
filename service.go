@@ -766,6 +766,7 @@ func newBrowserForBot(botID string) *browser.Browser {
 
 	if botID != "" {
 		// 多租户模式：使用 per-bot 的 cookie 和 profile
+		opts = append(opts, browser.WithBotID(botID))
 		opts = append(opts, browser.WithCookiePath(cookies.GetCookiesFilePathForBot(botID)))
 		if d := configs.GetProfileDirForBot(botID); d != "" {
 			opts = append(opts, browser.WithProfileDir(d))

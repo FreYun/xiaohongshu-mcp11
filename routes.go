@@ -55,11 +55,18 @@ func setupRoutes(appServer *AppServer) *gin.Engine {
 			JSONResponse: true,
 		},
 	)
-	// /mcp — fallback（兼容旧的无 botID 请求）
-	router.Any("/mcp", gin.WrapH(mcpHandler))
-	// /mcp/:botID — 多租户路由（如 /mcp/bot7）
-	// /mcp/:botID/* — 处理 MCP session 子路径
-	router.Any("/mcp/*path", gin.WrapH(mcpHandler))
+
+	// MCP 路由组 — 加入 per-bot tools/call 排队中间件
+	queue := newMCPToolQueue()
+	mcpGroup := router.Group("/mcp")
+	mcpGroup.Use(queue.middleware())
+	{
+		// /mcp — fallback（兼容旧的无 botID 请求）
+		mcpGroup.Any("", gin.WrapH(mcpHandler))
+		// /mcp/:botID — 多租户路由（如 /mcp/bot7）
+		// /mcp/:botID/* — 处理 MCP session 子路径
+		mcpGroup.Any("/*path", gin.WrapH(mcpHandler))
+	}
 
 	// API 路由组（暂不改，保持兼容）
 	api := router.Group("/api/v1")

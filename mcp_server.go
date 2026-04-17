@@ -5,10 +5,34 @@ import (
 	"encoding/base64"
 	"fmt"
 	"runtime/debug"
+	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sirupsen/logrus"
 )
+
+// 工具超时分档
+const (
+	toolTimeoutFast    = 2 * time.Minute // 读取类工具
+	toolTimeoutPublish = 6 * time.Minute // 发布类工具
+	// 登录类工具：不加强制超时（依赖 QR 过期 ~4min 自然退出）
+)
+
+// toolTimeoutMap 工具名 → 超时时长。不在表中的工具使用 toolTimeoutFast 默认值。
+// 登录类工具映射为 0 表示不加强制超时。
+var toolTimeoutMap = map[string]time.Duration{
+	// 登录类 — 无强制超时
+	"get_login_qrcode":         0,
+	"get_creator_login_qrcode": 0,
+	"get_both_login_qrcodes":   0,
+
+	// 发布类 — 6min
+	"publish_content":   toolTimeoutPublish,
+	"publish_with_video": toolTimeoutPublish,
+	"publish_longform":  toolTimeoutPublish,
+
+	// 其余未列出的工具 → 默认 toolTimeoutFast (2min)
+}
 
 // Helper functions for annotation pointers
 func boolPtr(b bool) *bool { return &b }
@@ -184,6 +208,46 @@ func withPanicRecovery[T any](
 	}
 }
 
+// withToolTimeout 按工具类型注入 context 超时。
+// 登录类工具（timeout=0）不加限制，其余按分档表执行。
+func withToolTimeout[T any](
+	toolName string,
+	handler func(context.Context, *mcp.CallToolRequest, T) (*mcp.CallToolResult, any, error),
+) func(context.Context, *mcp.CallToolRequest, T) (*mcp.CallToolResult, any, error) {
+
+	timeout := toolTimeoutFast // 默认 2min
+	if t, ok := toolTimeoutMap[toolName]; ok {
+		timeout = t
+	}
+
+	// 登录类：不加超时，直接透传
+	if timeout == 0 {
+		return handler
+	}
+
+	return func(ctx context.Context, req *mcp.CallToolRequest, args T) (*mcp.CallToolResult, any, error) {
+		ctx, cancel := context.WithTimeout(ctx, timeout)
+		defer cancel()
+
+		result, resp, err := handler(ctx, req, args)
+
+		// 如果是超时导致的失败，返回明确的超时错误
+		if ctx.Err() == context.DeadlineExceeded && (result == nil || !result.IsError) {
+			logrus.Warnf("[timeout] 工具 %s 执行超时（%s）", toolName, timeout)
+			return &mcp.CallToolResult{
+				Content: []mcp.Content{
+					&mcp.TextContent{
+						Text: fmt.Sprintf("工具 %s 执行超时（%s），操作已取消。请稍后重试。", toolName, timeout),
+					},
+				},
+				IsError: true,
+			}, nil, nil
+		}
+
+		return result, resp, err
+	}
+}
+
 // registerTools 注册所有 MCP 工具。botID 在闭包中捕获，传递到 handler 层。
 func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 	// 工具 1: 检查登录状态
@@ -196,10 +260,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery("check_login_status", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("check_login_status", withToolTimeout("check_login_status", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleCheckLoginStatus(ctx, botID)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 2: 获取登录二维码
@@ -212,10 +276,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery("get_login_qrcode", func(ctx context.Context, req *mcp.CallToolRequest, args GetLoginQrcodeArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("get_login_qrcode", withToolTimeout("get_login_qrcode", func(ctx context.Context, req *mcp.CallToolRequest, args GetLoginQrcodeArgs) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleGetLoginQrcode(ctx, botID, args.NotifySession)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 3: 删除 cookies（登录重置）
@@ -228,10 +292,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				DestructiveHint: boolPtr(true),
 			},
 		},
-		withPanicRecovery("delete_cookies", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("delete_cookies", withToolTimeout("delete_cookies", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleDeleteCookies(ctx, botID)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 4: 发布内容
@@ -244,7 +308,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				DestructiveHint: boolPtr(true),
 			},
 		},
-		withPanicRecovery("publish_content", func(ctx context.Context, req *mcp.CallToolRequest, args PublishContentArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("publish_content", withToolTimeout("publish_content", func(ctx context.Context, req *mcp.CallToolRequest, args PublishContentArgs) (*mcp.CallToolResult, any, error) {
 			var result *MCPToolResult
 			if args.TextToImage {
 				// 文字配图模式
@@ -272,7 +336,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				result = appServer.handlePublishContent(ctx, botID, argsMap)
 			}
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 5: 获取Feed列表
@@ -285,10 +349,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery("list_feeds", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("list_feeds", withToolTimeout("list_feeds", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleListFeeds(ctx, botID)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 6: 搜索内容
@@ -301,10 +365,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery("search_feeds", func(ctx context.Context, req *mcp.CallToolRequest, args SearchFeedsArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("search_feeds", withToolTimeout("search_feeds", func(ctx context.Context, req *mcp.CallToolRequest, args SearchFeedsArgs) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleSearchFeeds(ctx, botID, args)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 7: 获取Feed详情
@@ -317,7 +381,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery("get_feed_detail", func(ctx context.Context, req *mcp.CallToolRequest, args FeedDetailArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("get_feed_detail", withToolTimeout("get_feed_detail", func(ctx context.Context, req *mcp.CallToolRequest, args FeedDetailArgs) (*mcp.CallToolResult, any, error) {
 			argsMap := map[string]interface{}{
 				"feed_id":           args.FeedID,
 				"xsec_token":        args.XsecToken,
@@ -349,7 +413,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 
 			result := appServer.handleGetFeedDetail(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 8: 获取用户主页
@@ -362,14 +426,14 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery("user_profile", func(ctx context.Context, req *mcp.CallToolRequest, args UserProfileArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("user_profile", withToolTimeout("user_profile", func(ctx context.Context, req *mcp.CallToolRequest, args UserProfileArgs) (*mcp.CallToolResult, any, error) {
 			argsMap := map[string]interface{}{
 				"user_id":    args.UserID,
 				"xsec_token": args.XsecToken,
 			}
 			result := appServer.handleUserProfile(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 9: 发表评论
@@ -382,7 +446,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				DestructiveHint: boolPtr(true),
 			},
 		},
-		withPanicRecovery("post_comment_to_feed", func(ctx context.Context, req *mcp.CallToolRequest, args PostCommentArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("post_comment_to_feed", withToolTimeout("post_comment_to_feed", func(ctx context.Context, req *mcp.CallToolRequest, args PostCommentArgs) (*mcp.CallToolResult, any, error) {
 			argsMap := map[string]interface{}{
 				"feed_id":    args.FeedID,
 				"xsec_token": args.XsecToken,
@@ -390,7 +454,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 			}
 			result := appServer.handlePostComment(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 10: 回复评论
@@ -403,7 +467,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				DestructiveHint: boolPtr(true),
 			},
 		},
-		func(ctx context.Context, req *mcp.CallToolRequest, args ReplyCommentArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("reply_comment_in_feed", withToolTimeout("reply_comment_in_feed", func(ctx context.Context, req *mcp.CallToolRequest, args ReplyCommentArgs) (*mcp.CallToolResult, any, error) {
 			if args.CommentID == "" && args.UserID == "" {
 				return &mcp.CallToolResult{
 					IsError: true,
@@ -420,7 +484,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 			}
 			result := appServer.handleReplyComment(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
-		},
+		})),
 	)
 
 	// 工具 11: 发布视频（仅本地文件）
@@ -433,7 +497,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				DestructiveHint: boolPtr(true),
 			},
 		},
-		withPanicRecovery("publish_with_video", func(ctx context.Context, req *mcp.CallToolRequest, args PublishVideoArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("publish_with_video", withToolTimeout("publish_with_video", func(ctx context.Context, req *mcp.CallToolRequest, args PublishVideoArgs) (*mcp.CallToolResult, any, error) {
 			argsMap := map[string]interface{}{
 				"title":       args.Title,
 				"content":     args.Content,
@@ -445,7 +509,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 			}
 			result := appServer.handlePublishVideo(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 12: 点赞笔记
@@ -458,7 +522,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				DestructiveHint: boolPtr(true),
 			},
 		},
-		withPanicRecovery("like_feed", func(ctx context.Context, req *mcp.CallToolRequest, args LikeFeedArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("like_feed", withToolTimeout("like_feed", func(ctx context.Context, req *mcp.CallToolRequest, args LikeFeedArgs) (*mcp.CallToolResult, any, error) {
 			argsMap := map[string]interface{}{
 				"feed_id":    args.FeedID,
 				"xsec_token": args.XsecToken,
@@ -466,7 +530,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 			}
 			result := appServer.handleLikeFeed(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 13: 收藏笔记
@@ -479,7 +543,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				DestructiveHint: boolPtr(true),
 			},
 		},
-		withPanicRecovery("favorite_feed", func(ctx context.Context, req *mcp.CallToolRequest, args FavoriteFeedArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("favorite_feed", withToolTimeout("favorite_feed", func(ctx context.Context, req *mcp.CallToolRequest, args FavoriteFeedArgs) (*mcp.CallToolResult, any, error) {
 			argsMap := map[string]interface{}{
 				"feed_id":    args.FeedID,
 				"xsec_token": args.XsecToken,
@@ -487,7 +551,7 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 			}
 			result := appServer.handleFavoriteFeed(ctx, botID, argsMap)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 14: 同时获取主站+创作者平台二维码
@@ -500,10 +564,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery("get_both_login_qrcodes", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("get_both_login_qrcodes", withToolTimeout("get_both_login_qrcodes", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleGetBothLoginQrcodes(ctx, botID)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 15: 获取创作者平台登录二维码
@@ -516,10 +580,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery("get_creator_login_qrcode", func(ctx context.Context, req *mcp.CallToolRequest, args GetLoginQrcodeArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("get_creator_login_qrcode", withToolTimeout("get_creator_login_qrcode", func(ctx context.Context, req *mcp.CallToolRequest, args GetLoginQrcodeArgs) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleGetCreatorLoginQrcode(ctx, botID, args.NotifySession)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 16: 获取创作者首页数据
@@ -532,10 +596,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery("get_creator_home", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("get_creator_home", withToolTimeout("get_creator_home", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleGetCreatorHome(ctx, botID)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 17: 列出笔记
@@ -548,10 +612,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery("list_notes", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("list_notes", withToolTimeout("list_notes", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleListNotes(ctx, botID)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具: 内容分析数据
@@ -564,10 +628,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery("get_notes_performance", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("get_notes_performance", withToolTimeout("get_notes_performance", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleGetNotesPerformance(ctx, botID)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 18: 管理笔记（删除/置顶）
@@ -580,10 +644,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				DestructiveHint: boolPtr(true),
 			},
 		},
-		withPanicRecovery("manage_note", func(ctx context.Context, req *mcp.CallToolRequest, args ManageNoteArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("manage_note", withToolTimeout("manage_note", func(ctx context.Context, req *mcp.CallToolRequest, args ManageNoteArgs) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleManageNote(ctx, botID, args)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 19: 发布长文
@@ -596,10 +660,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				DestructiveHint: boolPtr(true),
 			},
 		},
-		withPanicRecovery("publish_longform", func(ctx context.Context, req *mcp.CallToolRequest, args PublishLongformArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("publish_longform", withToolTimeout("publish_longform", func(ctx context.Context, req *mcp.CallToolRequest, args PublishLongformArgs) (*mcp.CallToolResult, any, error) {
 			result := appServer.handlePublishLongform(ctx, botID, args)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 20: 获取通知评论列表
@@ -612,10 +676,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				ReadOnlyHint: true,
 			},
 		},
-		withPanicRecovery("get_notification_comments", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("get_notification_comments", withToolTimeout("get_notification_comments", func(ctx context.Context, req *mcp.CallToolRequest, _ any) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleGetNotificationComments(ctx, botID)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	// 工具 21: 通知页回复评论
@@ -628,10 +692,10 @@ func registerTools(server *mcp.Server, appServer *AppServer, botID string) {
 				DestructiveHint: boolPtr(true),
 			},
 		},
-		withPanicRecovery("reply_notification_comment", func(ctx context.Context, req *mcp.CallToolRequest, args ReplyNotificationArgs) (*mcp.CallToolResult, any, error) {
+		withPanicRecovery("reply_notification_comment", withToolTimeout("reply_notification_comment", func(ctx context.Context, req *mcp.CallToolRequest, args ReplyNotificationArgs) (*mcp.CallToolResult, any, error) {
 			result := appServer.handleReplyNotificationComment(ctx, botID, args)
 			return convertToMCPResult(result), nil, nil
-		}),
+		})),
 	)
 
 	logrus.Infof("Registered %d MCP tools", 21)

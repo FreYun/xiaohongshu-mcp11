@@ -3,6 +3,7 @@ package browser
 import (
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -20,6 +21,69 @@ const (
 	closeTimeout = 10 * time.Second
 	defaultUA    = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+
+// uaPool: realistic recent Chrome desktop UAs across Mac/Win.
+// Each bot deterministically picks one based on botID hash, so the same bot
+// always presents the same UA (changing UA per session is itself a bot signal).
+var uaPool = []string{
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+}
+
+// viewportPool: common real desktop resolutions. Same hash-stable selection.
+var viewportPool = []struct{ W, H int }{
+	{1920, 1080},
+	{1680, 1050},
+	{1536, 864},
+	{1440, 900},
+	{1366, 768},
+}
+
+// botSeed returns a stable hash of botID for deterministic pool selection.
+func botSeed(botID string) uint32 {
+	if botID == "" {
+		return 0
+	}
+	h := fnv.New32a()
+	h.Write([]byte(botID))
+	return h.Sum32()
+}
+
+func uaForBot(botID string) string {
+	if botID == "" {
+		return defaultUA
+	}
+	return uaPool[botSeed(botID)%uint32(len(uaPool))]
+}
+
+func viewportForBot(botID string) (int, int) {
+	if botID == "" {
+		return 1920, 1080
+	}
+	v := viewportPool[botSeed(botID)%uint32(len(viewportPool))]
+	return v.W, v.H
+}
+
+// applyStealthFlags adds anti-detection Chrome flags. The most important is
+// --disable-blink-features=AutomationControlled, which removes the Blink-level
+// automation signal that many bot detectors check (separate from
+// navigator.webdriver, which the stealth JS already masks).
+//
+// We also explicitly Delete the --enable-automation flag that rod's launcher
+// adds by default. That flag is the upstream source of navigator.webdriver=true
+// and the "Chrome is being controlled by automated test software" infobar.
+func applyStealthFlags(l *launcher.Launcher, botID string) *launcher.Launcher {
+	w, h := viewportForBot(botID)
+	return l.
+		Delete("enable-automation").
+		Set("disable-blink-features", "AutomationControlled").
+		Set("user-agent", uaForBot(botID)).
+		Set("window-size", fmt.Sprintf("%d,%d", w, h))
+}
 
 // Browser wraps rod.Browser + launcher to provide a unified interface
 // for both cookie-file mode and profile-dir mode.
@@ -79,6 +143,7 @@ type browserConfig struct {
 	binPath    string
 	profileDir string
 	cookiePath string // 指定 cookie 文件路径（多租户模式）
+	botID      string // bot 标识，用于稳定选取 UA / viewport
 }
 
 type Option func(*browserConfig)
@@ -102,6 +167,16 @@ func WithProfileDir(dir string) Option {
 func WithCookiePath(path string) Option {
 	return func(c *browserConfig) {
 		c.cookiePath = path
+	}
+}
+
+// WithBotID sets the bot identifier so the launcher can pick a stable
+// per-bot UA and viewport from the pool. Same botID always picks the same
+// pair, which is the human-realistic behavior (varying UA per session is
+// itself a bot signal).
+func WithBotID(botID string) Option {
+	return func(c *browserConfig) {
+		c.botID = botID
 	}
 }
 
@@ -136,8 +211,8 @@ func NewBrowser(headless bool, options ...Option) *Browser {
 func newBrowserWithCookies(headless bool, cfg *browserConfig) *Browser {
 	l := launcher.New().
 		Headless(headless).
-		Set("--no-sandbox").
-		Set("user-agent", defaultUA)
+		Set("--no-sandbox")
+	l = applyStealthFlags(l, cfg.botID)
 
 	if cfg.binPath != "" {
 		l = l.Bin(cfg.binPath)
@@ -175,6 +250,7 @@ func newBrowserWithProfile(headless bool, cfg *browserConfig) *Browser {
 		Set("--hide-crash-restore-bubble").
 		Set("--no-first-run").
 		Set("--disable-features", "SessionRestore")
+	l = applyStealthFlags(l, cfg.botID)
 
 	if cfg.binPath != "" {
 		l = l.Bin(cfg.binPath)
