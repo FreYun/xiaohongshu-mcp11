@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/go-rod/rod"
@@ -90,6 +91,11 @@ func applyStealthFlags(l *launcher.Launcher, botID string) *launcher.Launcher {
 type Browser struct {
 	rod      *rod.Browser
 	launcher *launcher.Launcher
+	// persistProfile is true when this browser was launched with a user-managed
+	// profile directory (profile mode). In that case Close() must NOT call
+	// launcher.Cleanup() because rod's Cleanup unconditionally RemoveAll's the
+	// user-data-dir — which would wipe the per-bot profile we want to persist.
+	persistProfile bool
 }
 
 func (b *Browser) NewPage() *rod.Page {
@@ -122,7 +128,19 @@ func (b *Browser) Close() {
 		logrus.Warnf("rod.Close() timed out for PID %d", pid)
 	}
 
-	// Step 2: wait briefly for Chrome process to actually exit
+	// Step 2: wait for Chrome process to exit.
+	// Cookie mode → use launcher.Cleanup which also RemoveAll's the temp dir.
+	// Profile mode → poll PID and never touch the persistent profile dir.
+	if b.persistProfile {
+		if waitProcessExit(pid, 5*time.Second) {
+			logrus.Infof("Chrome PID %d exited cleanly (profile preserved)", pid)
+		} else {
+			logrus.Warnf("Chrome PID %d did not exit after 5s, force killing (profile preserved)", pid)
+			b.launcher.Kill()
+		}
+		return
+	}
+
 	exitDone := make(chan struct{})
 	go func() {
 		defer close(exitDone)
@@ -137,6 +155,24 @@ func (b *Browser) Close() {
 		logrus.Warnf("Chrome PID %d did not exit after 5s, force killing", pid)
 		b.launcher.Kill()
 	}
+}
+
+// waitProcessExit polls until pid is no longer alive or timeout passes.
+// Returns true if the process exited within the timeout. Uses Signal(0)
+// which is the cross-platform way to test process liveness without killing it.
+func waitProcessExit(pid int, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return true
+	}
+	for time.Now().Before(deadline) {
+		if err := proc.Signal(syscall.Signal(0)); err != nil {
+			return true
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return false
 }
 
 type browserConfig struct {
@@ -269,14 +305,50 @@ func newBrowserWithProfile(headless bool, cfg *browserConfig) *Browser {
 
 	// 注入 cookies.json 中的 cookie，使 profile 模式与 cookie 文件模式保持一致。
 	// 这样即使是新建的 Chrome profile，也能携带已保存的 web_session 等认证 cookie。
+	// （on-demand: 已有有效 web_session 时会跳过，避免覆盖 Chrome 自治刷新的版本）
 	injectCookiesFromFile(b, cfg.cookiePath)
 
-	return &Browser{rod: b, launcher: l}
+	return &Browser{rod: b, launcher: l, persistProfile: true}
+}
+
+// hasValidWebSession 检查浏览器中是否已有有效的 xiaohongshu.com web_session cookie。
+// profile 模式下首次启动后，Chrome 会从 profile 目录加载持久化的 cookie；如果其中
+// web_session 还在有效期内，就不需要再从 cookies.json 注入（避免覆盖 Chrome 自己
+// 刷新过的更新版本）。cookie 模式下 Chrome 是空白 profile，此函数永远返回 false。
+func hasValidWebSession(b *rod.Browser) bool {
+	cks, err := b.GetCookies()
+	if err != nil {
+		return false
+	}
+	now := float64(time.Now().Unix())
+	for _, c := range cks {
+		if c.Name != "web_session" {
+			continue
+		}
+		if c.Domain != ".xiaohongshu.com" && c.Domain != "xiaohongshu.com" {
+			continue
+		}
+		// Expires == 0 表示 session cookie（无过期），也视为有效
+		if c.Expires == 0 || float64(c.Expires) > now {
+			return true
+		}
+	}
+	return false
 }
 
 // injectCookiesFromFile 通过 browser-level API 将 cookies.json 注入浏览器。
 // cookiePathOverride 不为空时使用该路径代替全局路径。
+//
+// 行为：
+//   - cookie 模式（profile 空白）：每次启动都从 cookies.json 注入（首次也是唯一的来源）
+//   - profile 模式（profile 已累积）：检测到 Chrome 已加载有效 web_session 就跳过注入，
+//     让 Chrome 自己管理 cookie 生命周期；profile 是空的（首次启动 / 登录过期）才注入
 func injectCookiesFromFile(b *rod.Browser, cookiePathOverride string) {
+	if hasValidWebSession(b) {
+		logrus.Info("cookies: profile 已有有效 web_session，跳过 cookies.json 注入")
+		return
+	}
+
 	cookiePath := cookiePathOverride
 	if cookiePath == "" {
 		cookiePath = cookies.GetCookiesFilePath()
@@ -285,13 +357,13 @@ func injectCookiesFromFile(b *rod.Browser, cookiePathOverride string) {
 
 	data, err := cookieLoader.LoadCookies()
 	if err != nil {
-		logrus.Warnf("profile mode: 加载 cookies 文件失败（可能尚未登录）: %v", err)
+		logrus.Warnf("cookies: 加载 cookies 文件失败（可能尚未登录）: %v", err)
 		return
 	}
 
 	var cks []*proto.NetworkCookie
 	if err := json.Unmarshal(data, &cks); err != nil {
-		logrus.Warnf("profile mode: 解析 cookies 失败: %v", err)
+		logrus.Warnf("cookies: 解析 cookies 失败: %v", err)
 		return
 	}
 
@@ -310,9 +382,9 @@ func injectCookiesFromFile(b *rod.Browser, cookiePathOverride string) {
 		})
 	}
 	if err := b.SetCookies(rodCookies); err != nil {
-		logrus.Warnf("profile mode: 注入 cookies 失败: %v", err)
+		logrus.Warnf("cookies: 注入失败: %v", err)
 		return
 	}
 
-	logrus.Infof("profile mode: 成功注入 %d 个 cookie", len(cks))
+	logrus.Infof("cookies: 从 %s 成功注入 %d 个 cookie", cookiePath, len(cks))
 }

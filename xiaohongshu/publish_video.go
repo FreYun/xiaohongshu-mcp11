@@ -155,7 +155,7 @@ func submitPublishVideo(page *rod.Page, title, content string, tags []string, sc
 	if err := contentElem.Input(content); err != nil {
 		return errors.Wrap(err, "输入正文失败")
 	}
-	if err := waitAndClickTitleInput(titleElem); err != nil {
+	if err := waitAndClickTitleInput(page, titleElem); err != nil {
 		return err
 	}
 	if err := inputTags(contentElem, tags); err != nil {

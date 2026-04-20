@@ -39,12 +39,12 @@ func NewPublishTextImageAction(page *rod.Page) (*PublishTextImageAction, error) 
 	if err := pp.WaitLoad(); err != nil {
 		logrus.Warnf("等待页面加载: %v", err)
 	}
-	time.Sleep(2 * time.Second)
+	humanSleep(2 * time.Second)
 
 	if err := pp.WaitDOMStable(time.Second, 0.1); err != nil {
 		logrus.Warnf("等待 DOM 稳定: %v", err)
 	}
-	time.Sleep(1 * time.Second)
+	humanSleep(1 * time.Second)
 
 	if err := checkCreatorPageLogin(pp); err != nil {
 		return nil, err
@@ -53,7 +53,7 @@ func NewPublishTextImageAction(page *rod.Page) (*PublishTextImageAction, error) 
 	if err := mustClickPublishTab(pp, "上传图文"); err != nil {
 		return nil, errors.Wrap(err, "点击上传图文 TAB 失败")
 	}
-	time.Sleep(1 * time.Second)
+	humanSleep(1 * time.Second)
 
 	return &PublishTextImageAction{page: pp}, nil
 }
@@ -74,7 +74,7 @@ func (p *PublishTextImageAction) Publish(ctx context.Context, content PublishTex
 	if err := clickByText(page, "文字配图"); err != nil {
 		return errors.Wrap(err, "点击文字配图按钮失败")
 	}
-	time.Sleep(1 * time.Second)
+	humanSleep(1 * time.Second)
 
 	// 2. 输入第一张卡片文字
 	logrus.Info("text_to_image: 输入第一张卡片")
@@ -88,7 +88,7 @@ func (p *PublishTextImageAction) Publish(ctx context.Context, content PublishTex
 		if err := clickByText(page, "再写一张"); err != nil {
 			return errors.Wrapf(err, "点击再写一张失败")
 		}
-		time.Sleep(500 * time.Millisecond)
+		humanSleep(500 * time.Millisecond)
 		if err := inputLastCard(page, content.TextCards[i]); err != nil {
 			return errors.Wrapf(err, "输入第 %d 张卡片失败", i+1)
 		}
@@ -136,14 +136,14 @@ func (p *PublishTextImageAction) Publish(ctx context.Context, content PublishTex
 	if err := clickNextStepButton(page); err != nil {
 		return errors.Wrap(err, "点击下一步失败")
 	}
-	time.Sleep(2 * time.Second)
+	humanSleep(2 * time.Second)
 
 	// 7. 等待发布编辑页加载
 	logrus.Info("text_to_image: 等待发布编辑页加载")
 	if err := page.WaitLoad(); err != nil {
 		logrus.Warnf("等待发布页加载: %v", err)
 	}
-	time.Sleep(3 * time.Second)
+	humanSleep(3 * time.Second)
 	if err := page.WaitDOMStable(2*time.Second, 0.1); err != nil {
 		logrus.Warnf("等待发布页 DOM 稳定: %v", err)
 	}
@@ -162,8 +162,8 @@ func clickByText(page *rod.Page, text string) error {
 			if visible, _ := el.Visible(); visible {
 				logrus.Infof("clickByText: 精确匹配 '%s', tag=%s", text, tag)
 				el.MustScrollIntoView()
-				time.Sleep(300 * time.Millisecond)
-				return el.Click(proto.InputMouseButtonLeft, 1)
+				humanSleep(300 * time.Millisecond)
+				return humanClick(page, el)
 			}
 		}
 	}
@@ -174,8 +174,8 @@ func clickByText(page *rod.Page, text string) error {
 			if visible, _ := el.Visible(); visible {
 				logrus.Infof("clickByText: 模糊匹配 '%s', tag=%s", text, tag)
 				el.MustScrollIntoView()
-				time.Sleep(300 * time.Millisecond)
-				return el.Click(proto.InputMouseButtonLeft, 1)
+				humanSleep(300 * time.Millisecond)
+				return humanClick(page, el)
 			}
 		}
 	}
@@ -188,10 +188,10 @@ func inputFirstCard(page *rod.Page, text string) error {
 	if err != nil {
 		return errors.Wrap(err, "未找到卡片输入区")
 	}
-	if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
+	if err := humanClick(page, el); err != nil {
 		return err
 	}
-	time.Sleep(300 * time.Millisecond)
+	humanSleep(300 * time.Millisecond)
 	return el.Input(text)
 }
 
@@ -210,7 +210,7 @@ func clickNextStepButton(page *rod.Page) error {
 			text, _ := el.Text()
 			if strings.Contains(text, "下一步") {
 				logrus.Infof("text_to_image: 找到下一步按钮 via %s", sel)
-				return el.Click(proto.InputMouseButtonLeft, 1)
+				return humanClick(page, el)
 			}
 		}
 	}
@@ -231,6 +231,9 @@ func textImageSubmitPublish(page *rod.Page, content PublishTextImageContent) err
 	for _, sel := range titleSelectors {
 		el, err := page.Timeout(5 * time.Second).Element(sel)
 		if err == nil && el != nil {
+			if err := humanClick(page, el); err != nil {
+				logrus.Warnf("点击标题失败: %v", err)
+			}
 			if err := el.SelectAllText(); err == nil {
 				_ = el.Input(content.Title)
 				logrus.Infof("text_to_image: 标题输入成功 via %s", sel)
@@ -238,7 +241,7 @@ func textImageSubmitPublish(page *rod.Page, content PublishTextImageContent) err
 			}
 		}
 	}
-	time.Sleep(500 * time.Millisecond)
+	humanSleep(500 * time.Millisecond)
 
 	// 输入正文（图下正文，替换默认填充的卡片文字）
 	if content.Content != "" {
@@ -258,18 +261,22 @@ func textImageSubmitPublish(page *rod.Page, content PublishTextImageContent) err
 			if visible, _ := el.Visible(); !visible {
 				continue
 			}
-			// 清空后输入
+			// 清空后输入。这里用原生 elem.Click 而不是 humanClick——
+			// 实测 humanClick 的坐标抖动 (bbox 中心 30-70%) 在 Quill 编辑器上
+			// 会落到不同的 paragraph div，导致后续 el.Input 里的 \n 换行符
+			// 被编辑器吞掉（发布后段落粘在一起）。editor 正文的点击必须命中
+			// 固定的编辑区，走 elem.Click（命中元素中心）稳定。
 			if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
 				continue
 			}
-			time.Sleep(200 * time.Millisecond)
+			humanSleep(200 * time.Millisecond)
 			_ = el.SelectAllText()
 			_ = el.Input(content.Content)
 			logrus.Infof("text_to_image: 正文输入成功 via %s", sel)
 			break
 		}
 	}
-	time.Sleep(500 * time.Millisecond)
+	humanSleep(500 * time.Millisecond)
 
 	// 输入标签（在正文区域用 #标签 方式）
 	if len(content.Tags) > 0 {
@@ -289,8 +296,9 @@ func textImageSubmitPublish(page *rod.Page, content PublishTextImageContent) err
 				continue
 			}
 			// 点击正文区聚焦，Ctrl+End 移到末尾，再回车换行
+			// 原因同上：editor 内用原生 elem.Click 保证命中同一 paragraph div
 			_ = el.Click(proto.InputMouseButtonLeft, 1)
-			time.Sleep(300 * time.Millisecond)
+			humanSleep(300 * time.Millisecond)
 			_, _ = page.Eval(`() => {
 				const sel = window.getSelection();
 				const el = document.querySelector('[contenteditable="true"][role="textbox"]') || document.querySelector('[contenteditable="true"]');
@@ -302,13 +310,13 @@ func textImageSubmitPublish(page *rod.Page, content PublishTextImageContent) err
 					sel.addRange(range);
 				}
 			}`)
-			time.Sleep(200 * time.Millisecond)
+			humanSleep(200 * time.Millisecond)
 			// 回车换行
 			ka, _ := el.KeyActions()
 			if ka != nil {
 				_ = ka.Press(input.Enter).Do()
 			}
-			time.Sleep(300 * time.Millisecond)
+			humanSleep(300 * time.Millisecond)
 
 			// 逐个输入标签
 			for _, tag := range content.Tags {
@@ -338,7 +346,8 @@ func textImageSubmitPublish(page *rod.Page, content PublishTextImageContent) err
 
 	// 点击发布
 	logrus.Info("text_to_image: 点击发布按钮")
-	time.Sleep(1 * time.Second)
+	// "review" pause before final publish click
+	humanSleep(1200 * time.Millisecond)
 	if err := clickByText(page, "发布"); err != nil {
 		return errors.Wrap(err, "点击发布按钮失败")
 	}
@@ -356,15 +365,15 @@ func textImageSubmitPublish(page *rod.Page, content PublishTextImageContent) err
 
 // inputLastCard 在最后一个（新添加的）卡片编辑区输入文字
 func inputLastCard(page *rod.Page, text string) error {
-	time.Sleep(500 * time.Millisecond)
+	humanSleep(500 * time.Millisecond)
 	els, err := page.Elements(`div[contenteditable="true"]`)
 	if err != nil || len(els) == 0 {
 		return errors.New("未找到卡片输入区")
 	}
 	lastEl := els[len(els)-1]
-	if err := lastEl.Click(proto.InputMouseButtonLeft, 1); err != nil {
+	if err := humanClick(page, lastEl); err != nil {
 		return err
 	}
-	time.Sleep(300 * time.Millisecond)
+	humanSleep(300 * time.Millisecond)
 	return lastEl.Input(text)
 }
