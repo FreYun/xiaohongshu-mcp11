@@ -31,42 +31,24 @@ type botCircuitState struct {
 const (
 	circuitMaxFailures = 3               // 连续失败 N 次后触发熔断
 	circuitCooldown    = 2 * time.Minute // 熔断冷却期
-
-	browserMaxConcurrent = 3                 // 全局最多同时运行的 Chrome 数量
-	browserQueueTimeout  = 4 * time.Minute   // 排队等待超时
 )
 
 // XiaohongshuService 小红书业务服务
 type XiaohongshuService struct {
-	browserMu sync.Mutex             // 保护 botLocks map
-	botLocks  map[string]*sync.Mutex // per-bot 浏览器锁，防止同一 bot 并发创建 Chrome 实例
-	browserSem chan struct{}          // 全局 Chrome 并发信号量
+	browserPool *BrowserPool
 
 	circuitMu sync.Mutex                    // 保护 circuits map
 	circuits  map[string]*botCircuitState   // per-bot 熔断器状态
-
 }
 
 // NewXiaohongshuService 创建小红书服务实例
 func NewXiaohongshuService() *XiaohongshuService {
 	return &XiaohongshuService{
-		botLocks:   make(map[string]*sync.Mutex),
-		browserSem: make(chan struct{}, browserMaxConcurrent),
-		circuits:   make(map[string]*botCircuitState),
+		browserPool: NewBrowserPool(),
+		circuits:    make(map[string]*botCircuitState),
 	}
 }
 
-// getBotLock 获取指定 bot 的浏览器互斥锁。
-// 同一 bot 同一时间只能有一个 Chrome 实例操作其 profile 目录，
-// 否则会导致 CDP connection reset 和 cookie 竞争。
-func (s *XiaohongshuService) getBotLock(botID string) *sync.Mutex {
-	s.browserMu.Lock()
-	defer s.browserMu.Unlock()
-	if _, ok := s.botLocks[botID]; !ok {
-		s.botLocks[botID] = &sync.Mutex{}
-	}
-	return s.botLocks[botID]
-}
 
 // checkCircuit 检查指定 bot 的熔断器状态。
 // 如果熔断器已打开（连续失败超过阈值），返回错误拒绝请求。
@@ -114,6 +96,7 @@ func (s *XiaohongshuService) recordBrowserFailure(botID string) {
 	if state.failures >= circuitMaxFailures {
 		state.openUntil = time.Now().Add(circuitCooldown)
 		logrus.Errorf("熔断器触发 [%s]: 连续 %d 次失败，暂停浏览器操作 %s", botID, state.failures, circuitCooldown)
+		s.browserPool.Evict(botID)
 	}
 }
 
@@ -192,22 +175,9 @@ func (s *XiaohongshuService) DeleteCookies(ctx context.Context, botID string) er
 	cookieLoader := cookies.NewLoadCookie(cookiePath)
 	fileErr := cookieLoader.DeleteCookies()
 
-	// 2. 启动浏览器并清除内部 cookie（profile 模式下 Chrome 会持久化 cookie）
-	b, browserErr := s.newLockedBrowser(botID)
-	if browserErr != nil {
-		logrus.Warnf("创建浏览器失败（清除 cookie 跳过）: %v", browserErr)
-		return fileErr
-	}
-	page := b.NewPage()
-	browserErr = page.Browser().SetCookies(nil)
-	_ = page.Close()
-	b.Close()
-
-	if browserErr != nil {
-		logrus.Warnf("清除浏览器内部 cookie 失败: %v", browserErr)
-	} else {
-		logrus.Info("已清除浏览器内部 cookie")
-	}
+	// 2. 驱逐池中缓存的浏览器（带旧 cookie 的实例不能复用）
+	s.browserPool.Evict(botID)
+	logrus.Info("已驱逐浏览器池中的缓存实例并删除 cookie")
 
 	return fileErr
 }
@@ -220,8 +190,7 @@ func (s *XiaohongshuService) CheckLoginStatus(ctx context.Context, botID string)
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	loginAction := xiaohongshu.NewLogin(page)
 
@@ -426,8 +395,7 @@ func (s *XiaohongshuService) publishContent(ctx context.Context, botID string, c
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action, err := xiaohongshu.NewPublishImageAction(page)
 	if err != nil {
@@ -512,8 +480,7 @@ func (s *XiaohongshuService) publishVideo(ctx context.Context, botID string, con
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action, err := xiaohongshu.NewPublishVideoAction(page)
 	if err != nil {
@@ -531,8 +498,7 @@ func (s *XiaohongshuService) ListFeeds(ctx context.Context, botID string) (*Feed
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	// 创建 Feeds 列表 action
 	action := xiaohongshu.NewFeedsListAction(page)
@@ -559,8 +525,7 @@ func (s *XiaohongshuService) SearchFeeds(ctx context.Context, botID string, keyw
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewSearchAction(page)
 
@@ -590,8 +555,7 @@ func (s *XiaohongshuService) GetFeedDetailWithConfig(ctx context.Context, botID 
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	// 创建 Feed 详情 action
 	action := xiaohongshu.NewFeedDetailAction(page)
@@ -618,8 +582,7 @@ func (s *XiaohongshuService) UserProfile(ctx context.Context, botID string, user
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewUserProfileAction(page)
 
@@ -645,8 +608,7 @@ func (s *XiaohongshuService) PostCommentToFeed(ctx context.Context, botID string
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewCommentFeedAction(page)
 
@@ -665,8 +627,7 @@ func (s *XiaohongshuService) LikeFeed(ctx context.Context, botID string, feedID,
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewLikeAction(page)
 	if err := action.Like(ctx, feedID, xsecToken); err != nil {
@@ -683,8 +644,7 @@ func (s *XiaohongshuService) UnlikeFeed(ctx context.Context, botID string, feedI
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewLikeAction(page)
 	if err := action.Unlike(ctx, feedID, xsecToken); err != nil {
@@ -701,8 +661,7 @@ func (s *XiaohongshuService) FavoriteFeed(ctx context.Context, botID string, fee
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewFavoriteAction(page)
 	if err := action.Favorite(ctx, feedID, xsecToken); err != nil {
@@ -719,8 +678,7 @@ func (s *XiaohongshuService) UnfavoriteFeed(ctx context.Context, botID string, f
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewFavoriteAction(page)
 	if err := action.Unfavorite(ctx, feedID, xsecToken); err != nil {
@@ -737,8 +695,7 @@ func (s *XiaohongshuService) ReplyCommentToFeed(ctx context.Context, botID strin
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewCommentFeedAction(page)
 
@@ -781,62 +738,47 @@ func newBrowserForBot(botID string) *browser.Browser {
 	return browser.NewBrowser(configs.IsHeadless(), opts...)
 }
 
-// lockedBrowser 包装 browser.Browser，在 Close 时自动释放 per-bot 锁。
+// lockedBrowser 包装 browser.Browser，Close 时归还到 pool（不销毁浏览器）。
 // 使用方法：b, err := s.newLockedBrowser(botID); if err != nil { return err }; defer b.Close()
 type lockedBrowser struct {
 	*browser.Browser
 	botID   string
 	service *XiaohongshuService
-	unlock  func()
+	closed  bool
 }
 
 func (lb *lockedBrowser) Close() {
-	lb.Browser.Close()
-	if lb.unlock != nil {
-		lb.unlock()
-		lb.unlock = nil // 防止重复 unlock
+	if lb.closed {
+		return
 	}
+	lb.closed = true
+	lb.service.browserPool.Release(lb.botID)
 }
 
-// RecordSuccess 记录操作成功，重置熔断器。在成功完成浏览器操作后调用。
 func (lb *lockedBrowser) RecordSuccess() {
 	lb.service.recordBrowserSuccess(lb.botID)
 }
 
-// RecordFailure 记录操作失败，累计熔断计数。在浏览器操作失败时调用。
 func (lb *lockedBrowser) RecordFailure() {
 	lb.service.recordBrowserFailure(lb.botID)
 }
 
-// newLockedBrowser 创建带 per-bot 锁、全局并发限制和熔断检查的浏览器实例。
-// 如果该 bot 的熔断器已打开（连续失败过多），立即返回错误而不创建 Chrome 进程。
-// 如果全局 Chrome 数量已满，排队等待最多 browserQueueTimeout。
-// 调用方必须 defer b.Close() 来释放锁和信号量。
+// newLockedBrowser 从浏览器池获取（或创建）持久浏览器实例。
+// 调用方必须 defer b.Close() 归还到池。
 func (s *XiaohongshuService) newLockedBrowser(botID string) (*lockedBrowser, error) {
-	// 熔断检查：快速失败，避免在系统异常时继续创建 Chrome 进程
 	if err := s.checkCircuit(botID); err != nil {
 		return nil, err
 	}
 
-	// 全局并发限制：最多 browserMaxConcurrent 个 Chrome 同时运行
-	select {
-	case s.browserSem <- struct{}{}:
-		// 获得令牌
-	case <-time.After(browserQueueTimeout):
-		return nil, fmt.Errorf("浏览器排队超时（%s），当前已有 %d 个 Chrome 在运行", browserQueueTimeout, browserMaxConcurrent)
+	b, err := s.browserPool.Acquire(botID)
+	if err != nil {
+		return nil, err
 	}
 
-	lock := s.getBotLock(botID)
-	lock.Lock()
-	b := newBrowserForBot(botID)
 	return &lockedBrowser{
 		Browser: b,
 		botID:   botID,
 		service: s,
-		unlock: func() {
-			lock.Unlock()
-			<-s.browserSem // 归还令牌
-		},
 	}, nil
 }
 
@@ -862,22 +804,6 @@ func saveCookiesForBot(page *rod.Page, botID string) error {
 	return cookieLoader.SaveCookies(data)
 }
 
-// withBrowserPage 执行需要浏览器页面的操作的通用函数
-func withBrowserPage(fn func(*rod.Page) error) error {
-	return withBrowserPageForBot("", fn)
-}
-
-// withBrowserPageForBot 为指定 bot 执行浏览器操作
-func withBrowserPageForBot(botID string, fn func(*rod.Page) error) error {
-	b := newBrowserForBot(botID)
-	defer b.Close()
-
-	page := b.NewPage()
-	defer page.Close()
-
-	return fn(page)
-}
-
 // CheckBothLoginStatus 验证主站和创作者平台的 session 是否有效
 // 主站：导航到个人主页，URL 停在 /user/profile/ 则已登录
 // 创作者平台：调用 ListNotes，不报错则已登录
@@ -892,31 +818,13 @@ const (
 )
 
 func (s *XiaohongshuService) CheckBothLoginStatus(ctx context.Context, botID string) (mainStatus string, creatorOK bool, err error) {
-	// 熔断检查：快速失败，避免在系统异常时继续创建 Chrome 进程
-	if err = s.checkCircuit(botID); err != nil {
-		mainStatus = MainLoginNo
+	mainStatus = MainLoginNo
+
+	// 主站：用 pool 获取浏览器，导航验证
+	b, err := s.newLockedBrowser(botID)
+	if err != nil {
 		return
 	}
-
-	// 全局并发限制
-	select {
-	case s.browserSem <- struct{}{}:
-		defer func() { <-s.browserSem }()
-	case <-time.After(browserQueueTimeout):
-		err = fmt.Errorf("浏览器排队超时（%s）", browserQueueTimeout)
-		mainStatus = MainLoginNo
-		return
-	}
-
-	// 手动加锁（不用 newLockedBrowser），因为需要连续创建两个浏览器
-	lock := s.getBotLock(botID)
-	lock.Lock()
-	defer lock.Unlock()
-
-	mainStatus = MainLoginNo // 默认未登录
-
-	// 主站：导航验证
-	b := newBrowserForBot(botID)
 	page := b.NewPage()
 
 	pp := page.Context(ctx).Timeout(30 * time.Second)
@@ -927,7 +835,6 @@ func (s *XiaohongshuService) CheckBothLoginStatus(ctx context.Context, botID str
 			logrus.Infof("CheckBothLoginStatus [%s] main URL: %s", botID, info.URL)
 			url := info.URL
 			if strings.Contains(url, "/captcha") {
-				// captcha 拦截 — 检查 cookie 文件确认是否真的有 session
 				if hasValidWebSession(botID) {
 					mainStatus = MainLoginCaptcha
 				} else {
@@ -943,16 +850,20 @@ func (s *XiaohongshuService) CheckBothLoginStatus(ctx context.Context, botID str
 	_ = page.Close()
 	b.Close()
 
-	// 创作者平台：调用 ListNotes 验证（锁已持有，用无锁版本）
-	_, listErr := s.listNotesLocked(ctx, botID)
+	// 创作者平台：再次从 pool 获取同一浏览器，调用 ListNotes 验证
+	b2, err2 := s.newLockedBrowser(botID)
+	if err2 != nil {
+		err = nil
+		return
+	}
+	page2 := b2.GetPage()
+	defer b2.Close()
+
+	action := xiaohongshu.NewNoteManageAction(page2)
+	_, listErr := action.ListNotes(ctx)
 	if listErr == nil {
 		creatorOK = true
 	}
-
-	// 注意：不记录熔断状态。"未登录"是正常的检查结果，不是浏览器故障。
-	// 如果这里也喂熔断器，连续几次 check_login 发现未登录就会触发熔断，
-	// 反而阻止后续的 get_login_qrcode 扫码登录。
-	// 熔断器由实际业务操作（SearchFeeds、PublishContent 等）驱动即可。
 
 	return
 }
@@ -990,8 +901,7 @@ func (s *XiaohongshuService) CheckCreatorLoginStatus(ctx context.Context, botID 
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	pp := page.Context(ctx).Timeout(30 * time.Second)
 	if err := pp.Navigate("https://creator.xiaohongshu.com/publish/publish?source=official"); err != nil {
@@ -1128,8 +1038,7 @@ func (s *XiaohongshuService) GetCreatorHome(ctx context.Context, botID string) (
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewCreatorStatsAction(page)
 	return action.GetCreatorHome(ctx)
@@ -1137,19 +1046,13 @@ func (s *XiaohongshuService) GetCreatorHome(ctx context.Context, botID string) (
 
 // ListNotes 列出创作者后台笔记
 func (s *XiaohongshuService) ListNotes(ctx context.Context, botID string) ([]xiaohongshu.NoteInfo, error) {
-	lock := s.getBotLock(botID)
-	lock.Lock()
-	defer lock.Unlock()
-	return s.listNotesLocked(ctx, botID)
-}
-
-// listNotesLocked 是 ListNotes 的无锁版本，供已持有 bot 锁的调用方使用（如 CheckBothLoginStatus）。
-func (s *XiaohongshuService) listNotesLocked(ctx context.Context, botID string) ([]xiaohongshu.NoteInfo, error) {
-	b := newBrowserForBot(botID)
+	b, err := s.newLockedBrowser(botID)
+	if err != nil {
+		return nil, err
+	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewNoteManageAction(page)
 	return action.ListNotes(ctx)
@@ -1163,8 +1066,7 @@ func (s *XiaohongshuService) GetNotesPerformance(ctx context.Context, botID stri
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewNotesPerformanceAction(page)
 	return action.GetNotesPerformance(ctx)
@@ -1178,8 +1080,7 @@ func (s *XiaohongshuService) DeleteNote(ctx context.Context, botID string, feedI
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewNoteManageAction(page)
 	return action.Delete(ctx, feedID)
@@ -1193,8 +1094,7 @@ func (s *XiaohongshuService) PinNote(ctx context.Context, botID string, feedID s
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewNoteManageAction(page)
 	return action.Pin(ctx, feedID)
@@ -1208,8 +1108,7 @@ func (s *XiaohongshuService) PublishLongform(ctx context.Context, botID string, 
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action, err := xiaohongshu.NewPublishLongformAction(page)
 	if err != nil {
@@ -1246,8 +1145,7 @@ func (s *XiaohongshuService) PublishTextToImage(ctx context.Context, botID strin
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action, err := xiaohongshu.NewPublishTextImageAction(page)
 	if err != nil {
@@ -1274,8 +1172,7 @@ func (s *XiaohongshuService) GetNotificationComments(ctx context.Context, botID 
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewNotificationAction(page)
 	return action.GetNotificationComments(ctx)
@@ -1289,8 +1186,7 @@ func (s *XiaohongshuService) ReplyNotificationComment(ctx context.Context, botID
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewNotificationAction(page)
 	return action.ReplyToNotificationComment(ctx, commentIndex, content)
@@ -1304,8 +1200,7 @@ func (s *XiaohongshuService) GetMyProfile(ctx context.Context, botID string) (*U
 	}
 	defer b.Close()
 
-	page := b.NewPage()
-	defer page.Close()
+	page := b.GetPage()
 
 	action := xiaohongshu.NewUserProfileAction(page)
 	result, err := action.GetMyProfileViaSidebar(ctx)

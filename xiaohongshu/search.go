@@ -5,9 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
+	"strings"
 	"time"
 
 	"github.com/go-rod/rod"
+	"github.com/go-rod/rod/lib/input"
+	"github.com/sirupsen/logrus"
 	"github.com/xpzouying/xiaohongshu-mcp/errors"
 )
 
@@ -166,14 +169,19 @@ func NewSearchAction(page *rod.Page) *SearchAction {
 }
 
 func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...FilterOption) ([]Feed, error) {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 	page := s.page.Context(ctx)
 
-	searchURL := makeSearchURL(keyword)
-	page.MustNavigate(searchURL).MustWaitLoad()
+	// 模拟真实用户：打开 explore → 点搜索框 → 逐字输入 → 回车
+	if err := humanSearch(page, keyword); err != nil {
+		logrus.Warnf("humanSearch failed, fallback to direct URL: %v", err)
+		searchURL := makeSearchURL(keyword)
+		page.MustNavigate(searchURL).MustWaitLoad()
+	}
 
 	page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
+	humanSleepRange(1500, 3500)
 
 	// 如果有筛选条件，则应用筛选
 	if len(filters) > 0 {
@@ -194,23 +202,30 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 			}
 		}
 
-		// 悬停在筛选按钮上
+		// 悬停在筛选按钮上（保留 MustHover 触发面板，叠加随机停顿）
 		filterButton := page.MustElement(`div.filter`)
 		filterButton.MustHover()
+		humanSleepRange(400, 900)
 
 		// 等待筛选面板出现
 		page.MustWait(`() => document.querySelector('div.filter-panel') !== null`)
 
-		// 应用所有筛选条件
-		for _, filter := range allInternalFilters {
+		// 应用所有筛选条件，用 humanClick 替代 MustClick，条件间插入短停顿
+		for i, filter := range allInternalFilters {
 			selector := fmt.Sprintf(`div.filter-panel div.filters:nth-child(%d) div.tags:nth-child(%d)`,
 				filter.FiltersIndex, filter.TagsIndex)
 			option := page.MustElement(selector)
-			option.MustClick()
+			if err := humanClick(page, option); err != nil {
+				logrus.Warnf("humanClick filter option failed, fallback: %v", err)
+				option.MustClick()
+			}
+			if i < len(allInternalFilters)-1 {
+				humanSleepRange(350, 800)
+			}
 		}
 
 		// 等待筛选后页面更新
-		time.Sleep(2 * time.Second)
+		humanSleepRange(1500, 2800)
 		page.MustWait(`() => window.__INITIAL_STATE__ !== undefined`)
 	}
 
@@ -237,6 +252,71 @@ func (s *SearchAction) Search(ctx context.Context, keyword string, filters ...Fi
 	}
 
 	return feeds, nil
+}
+
+// humanSearch 模拟真实用户在 explore 页面搜索的完整路径：
+// 打开 explore → 浏览 → 点击搜索框 → 逐字输入关键词 → 按回车 → 等待结果。
+func humanSearch(page *rod.Page, keyword string) error {
+	logrus.Info("humanSearch: 导航到 explore 首页")
+	if err := page.Navigate("https://www.xiaohongshu.com/explore"); err != nil {
+		return fmt.Errorf("navigate explore: %w", err)
+	}
+	if err := page.WaitDOMStable(time.Second, 0.1); err != nil {
+		logrus.Warnf("explore WaitDOMStable: %v", err)
+	}
+	humanSleepRange(1500, 3000)
+
+	// 点击搜索框（explore 页顶部的搜索输入框）
+	searchInput, err := page.Timeout(10 * time.Second).Element(`#search-input`)
+	if err != nil {
+		return fmt.Errorf("find search input: %w", err)
+	}
+
+	if err := humanClick(page, searchInput); err != nil {
+		return fmt.Errorf("click search input: %w", err)
+	}
+	humanSleepRange(300, 700)
+
+	// 逐字符输入关键词
+	logrus.Infof("humanSearch: 输入关键词 '%s'", keyword)
+	if err := humanType(searchInput, keyword); err != nil {
+		return fmt.Errorf("type keyword: %w", err)
+	}
+	humanSleepRange(500, 1200)
+
+	// 按回车搜索
+	if err := page.Keyboard.Press(input.Enter); err != nil {
+		return fmt.Errorf("press enter: %w", err)
+	}
+
+	// 等待搜索结果页加载
+	if err := page.WaitDOMStable(time.Second, 0.1); err != nil {
+		logrus.Warnf("search result WaitDOMStable: %v", err)
+	}
+
+	logrus.Info("humanSearch: 搜索结果页已加载")
+	return nil
+}
+
+// ensureOnExplore makes sure the page is already sitting on a xiaohongshu.com
+// URL before we navigate to the search-result page. This sets a proper
+// Referer on the search request (instead of about:blank / empty), which
+// matches the normal "visit homepage → search" flow real users produce.
+// No-op if we're already on the site.
+func ensureOnExplore(page *rod.Page) {
+	info, err := page.Info()
+	if err == nil && info != nil && strings.Contains(info.URL, "xiaohongshu.com") {
+		return
+	}
+	logrus.Debug("search: not on xiaohongshu.com, bouncing through /explore first")
+	if err := page.Navigate("https://www.xiaohongshu.com/explore"); err != nil {
+		logrus.Warnf("search: pre-navigate explore failed: %v", err)
+		return
+	}
+	if err := page.WaitLoad(); err != nil {
+		logrus.Warnf("search: explore WaitLoad failed: %v", err)
+	}
+	humanSleepRange(1200, 2500)
 }
 
 func makeSearchURL(keyword string) string {

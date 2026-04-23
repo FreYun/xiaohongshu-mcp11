@@ -270,6 +270,11 @@ func textImageSubmitPublish(page *rod.Page, content PublishTextImageContent) err
 				continue
 			}
 			humanSleep(200 * time.Millisecond)
+			// 先用 JS 清空 Quill 编辑器内容——text-to-image 模式下
+			// 点击"下一步"后编辑器会预填卡片文字（即标题），
+			// SelectAllText()+Input() 无法可靠清除，导致正文前面多出标题。
+			el.Eval(`function() { this.innerHTML = '<p><br></p>' }`)
+			humanSleep(100 * time.Millisecond)
 			_ = el.SelectAllText()
 			_ = el.Input(content.Content)
 			logrus.Infof("text_to_image: 正文输入成功 via %s", sel)

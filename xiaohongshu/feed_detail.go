@@ -78,18 +78,15 @@ func (f *FeedDetailAction) GetFeedDetail(ctx context.Context, feedID, xsecToken 
 
 func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, xsecToken string, loadAllComments bool, config CommentLoadConfig) (*FeedDetailResponse, error) {
 	page := f.page.Context(ctx).Timeout(10 * time.Minute)
-	url := makeFeedDetailURL(feedID, xsecToken)
 
-	logrus.Infof("打开 feed 详情页: %s", url)
+	logrus.Infof("获取 feed 详情: feedID=%s", feedID)
 	logrus.Infof("配置: 点击更多=%v, 回复阈值=%d, 最大评论数=%d, 滚动速度=%s",
 		config.ClickMoreReplies, config.MaxRepliesThreshold, config.MaxCommentItems, config.ScrollSpeed)
 
-	// 使用retry-go处理页面导航和DOM稳定等待
+	// 从 explore 页自然导航到详情页，带 retry
 	err := retry.Do(
 		func() error {
-			page.MustNavigate(url)
-			page.MustWaitDOMStable()
-			return nil
+			return navigateToFeedDetail(page, feedID, xsecToken)
 		},
 		retry.Attempts(3),
 		retry.Delay(500*time.Millisecond),
@@ -100,11 +97,6 @@ func (f *FeedDetailAction) GetFeedDetailWithConfig(ctx context.Context, feedID, 
 	)
 	if err != nil {
 		logrus.Errorf("页面导航失败: %v", err)
-		return nil, err
-	}
-	sleepRandom(1000, 1000)
-
-	if err := checkPageAccessible(page); err != nil {
 		return nil, err
 	}
 
@@ -426,17 +418,24 @@ func clickElementWithHumanBehavior(page *rod.Page, el *rod.Element, text string)
 
 			sleepRandom(reactionTimeRange.min, reactionTimeRange.max)
 
-			// 鼠标悬停
+			// 鼠标悬停 + 从已定位的鼠标坐标点击（真正的物理光标点击，
+			// 而不是 el.Click 这种绕过光标位置直接派发 click 的方式）
+			mouseMoved := false
 			if box, err := el.Shape(); err == nil && len(box.Quads) > 0 {
 				x := float64(box.Quads[0][0]+box.Quads[0][4]) / 2
 				y := float64(box.Quads[0][1]+box.Quads[0][5]) / 2
 				page.Mouse.MustMoveTo(x, y)
 				sleepRandom(hoverTimeRange.min, hoverTimeRange.max)
+				mouseMoved = true
 			}
 
-			// 点击
-			if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
-				return err // 返回错误以触发重试
+			// 点击：优先走已定位的鼠标（物理光标），拿不到坐标再退回 el.Click
+			if mouseMoved {
+				if err := page.Mouse.Click(proto.InputMouseButtonLeft, 1); err != nil {
+					return err
+				}
+			} else if err := el.Click(proto.InputMouseButtonLeft, 1); err != nil {
+				return err
 			}
 
 			// 模拟人类阅读时间

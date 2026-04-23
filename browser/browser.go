@@ -96,10 +96,36 @@ type Browser struct {
 	// launcher.Cleanup() because rod's Cleanup unconditionally RemoveAll's the
 	// user-data-dir — which would wipe the per-bot profile we want to persist.
 	persistProfile bool
+	activePage     *rod.Page
 }
 
 func (b *Browser) NewPage() *rod.Page {
 	return stealth.MustPage(b.rod)
+}
+
+// GetPage returns the persistent active page for this browser. The same
+// *rod.Page object is returned every call so that elements found on it
+// keep a valid JS execution context (b.rod.Pages() returns fresh wrapper
+// objects each time, which breaks elem.Eval inside humanClick).
+func (b *Browser) GetPage() *rod.Page {
+	if b.activePage != nil {
+		if _, err := b.activePage.Eval(`() => document.readyState`); err == nil {
+			return b.activePage
+		}
+		logrus.Warn("GetPage: activePage 失效，重新创建")
+	}
+	b.activePage = stealth.MustPage(b.rod)
+	logrus.Info("GetPage: 创建新 activePage")
+	return b.activePage
+}
+
+func (b *Browser) IsAlive() bool {
+	pid := b.launcher.PID()
+	proc, err := os.FindProcess(pid)
+	if err != nil {
+		return false
+	}
+	return proc.Signal(syscall.Signal(0)) == nil
 }
 
 func (b *Browser) Close() {

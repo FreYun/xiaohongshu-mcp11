@@ -88,6 +88,9 @@ func (s *AppServer) Start(port string) error {
 
 	logrus.Infof("正在关闭服务器...")
 
+	s.xiaohongshuService.browserPool.CloseAll()
+	logrus.Infof("浏览器池已关闭")
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 

@@ -63,7 +63,12 @@ func (n *NotificationAction) GetNotificationComments(ctx context.Context) (*Noti
 	if err := ensureMentionsTab(page); err != nil {
 		logrus.Warnf("切换评论和@tab失败: %v，继续尝试读取", err)
 	}
-	humanSleep(1 * time.Second)
+	humanSleep(2 * time.Second)
+
+	// 切 tab 后等待新内容加载
+	if err := page.WaitDOMStable(time.Second, 0.1); err != nil {
+		logrus.Warnf("切tab后等待DOM稳定出现问题: %v，继续尝试", err)
+	}
 
 	// 提取评论列表
 	comments, err := extractNotificationComments(page)
@@ -96,7 +101,11 @@ func (n *NotificationAction) ReplyToNotificationComment(ctx context.Context, com
 	if err := ensureMentionsTab(page); err != nil {
 		logrus.Warnf("切换评论和@tab失败: %v，继续尝试", err)
 	}
-	humanSleep(1 * time.Second)
+	humanSleep(2 * time.Second)
+
+	if err := page.WaitDOMStable(time.Second, 0.1); err != nil {
+		logrus.Warnf("切tab后等待DOM稳定出现问题: %v，继续尝试", err)
+	}
 
 	// 点击对应评论的「回复」按钮
 	if err := clickReplyButton(page, commentIndex); err != nil {
@@ -122,53 +131,63 @@ func (n *NotificationAction) ReplyToNotificationComment(ctx context.Context, com
 
 // ensureMentionsTab 确保在「评论和@」tab 下
 func ensureMentionsTab(page *rod.Page) error {
-	// 使用 go-rod 查找 tab 元素并点击
-	tabs, err := page.Elements(".tab-item, .channel-tab-item, [class*=tab]")
-	if err != nil {
-		logrus.Warnf("查找 tab 元素失败: %v", err)
+	// 先检查页面是否已有评论内容（已在正确 tab）
+	hasComments, _ := page.Eval(`() => {
+		const text = document.body.innerText || '';
+		return /(评论了你的笔记|回复了你的评论|@了你|在评论中@了你|提到了你)/.test(text);
+	}`)
+	if hasComments != nil && hasComments.Value.Bool() {
+		logrus.Info("页面已有评论内容，已在「评论和@」tab")
 		return nil
 	}
 
-	for _, tab := range tabs {
-		text, err := tab.Text()
-		if err != nil {
-			continue
-		}
-		if strings.Contains(text, "评论和@") {
-			// 检查是否已激活
-			cls, _ := tab.Attribute("class")
-			if cls != nil && strings.Contains(*cls, "active") {
-				logrus.Info("已在「评论和@」tab")
-				return nil
+	// 用 JS 精确点击「评论和@」tab 文字（尝试多种匹配策略）
+	for attempt := 0; attempt < 3; attempt++ {
+		logrus.Infof("尝试切换到「评论和@」tab (第%d次)", attempt+1)
+		clicked, _ := page.Eval(`() => {
+			// 策略1: 找所有叶子节点中文字为"评论和@"的
+			const allEls = document.querySelectorAll('*');
+			for (let el of allEls) {
+				const t = el.textContent.trim();
+				if (t === '评论和@' && el.offsetParent !== null) {
+					el.click();
+					return 'leaf';
+				}
 			}
-			if err := tab.Click(proto.InputMouseButtonLeft, 1); err != nil {
-				logrus.Warnf("go-rod 点击 tab 失败: %v，尝试 JS 方式", err)
-			} else {
-				logrus.Info("已切换到「评论和@」tab")
-				humanSleep(1 * time.Second)
-				return nil
+			// 策略2: 找包含"评论和@"的可点击元素
+			for (let el of allEls) {
+				const t = el.textContent.trim();
+				if (t === '评论和@' || t === '评论和@赞和收藏新增关注'.substring(0, 4)) {
+					if (el.closest('a, button, [role="tab"], [class*="tab"]')) {
+						el.closest('a, button, [role="tab"], [class*="tab"]').click();
+						return 'closest';
+					}
+					el.click();
+					return 'direct';
+				}
 			}
+			return '';
+		}`)
+		if clicked != nil && clicked.Value.Str() != "" {
+			logrus.Infof("已切换到「评论和@」tab (方式: %s)", clicked.Value.Str())
 		}
+
+		humanSleep(2 * time.Second)
+
+		// 验证是否切换成功
+		check, _ := page.Eval(`() => {
+			const text = document.body.innerText || '';
+			return /(评论了你的笔记|回复了你的评论|@了你|在评论中@了你|提到了你)/.test(text);
+		}`)
+		if check != nil && check.Value.Bool() {
+			logrus.Info("确认已在「评论和@」tab（内容验证通过）")
+			return nil
+		}
+		logrus.Warnf("第%d次切换后未检测到评论内容，重试", attempt+1)
 	}
 
-	// 兜底：用 JS 点击包含「评论和@」文本的元素
-	logrus.Info("尝试 JS 方式切换到「评论和@」tab")
-	_, err = page.Eval(`() => {
-		const allElements = document.querySelectorAll('*');
-		for (let el of allElements) {
-			if (el.children.length === 0 && el.textContent.trim() === '评论和@') {
-				el.click();
-				return true;
-			}
-		}
-		return false;
-	}`)
-	if err != nil {
-		return fmt.Errorf("JS 切换 tab 失败: %w", err)
-	}
-
-	humanSleep(1 * time.Second)
-	return nil
+	logrus.Warn("3次尝试后仍未切换到评论tab，继续尝试提取")
+	return fmt.Errorf("切换评论tab失败")
 }
 
 // extractNotificationComments 从通知页提取评论列表
@@ -178,118 +197,83 @@ func extractNotificationComments(page *rod.Page) ([]NotificationComment, error) 
 }
 
 // extractCommentsViaJS 通过 JS 提取评论信息
-// 策略：找到所有包含 a[href*="/user/profile/"] 的最小独立条目，每个条目对应一条通知
+// 策略：自底向上找通知条目，结果按 user_id+content 去重（同一条通知的头像链接和文字链接会产生两条相同记录）
 func extractCommentsViaJS(page *rod.Page) ([]NotificationComment, error) {
 	result, err := page.Eval(`() => {
-		const comments = [];
-
-		// 跳过 tab 栏的关键词（完全匹配去空格后的文本）
+		const raw = [];
 		const tabBarTexts = ['评论和@赞和收藏新增关注', '评论和@', '赞和收藏', '新增关注'];
 
-		// 策略 1: 找所有包含用户链接的通知条目
-		// 小红书通知页的每条通知都包含一个用户头像链接
 		const userLinks = document.querySelectorAll('a[href*="/user/profile/"]');
-		if (userLinks.length === 0) {
-			return JSON.stringify([]);
-		}
-
-		// 从每个用户链接向上找到最近的"通知条目"容器
-		// 通知条目通常是 userLink 的某个祖先，且包含回复按钮和时间信息
-		const seenItems = new Set();
+		if (userLinks.length === 0) return JSON.stringify([]);
 
 		for (const link of userLinks) {
-			// 向上查找包含"回复"按钮或时间信息的最小容器
 			let candidate = link.parentElement;
 			let bestCandidate = null;
 
 			for (let depth = 0; depth < 8 && candidate; depth++) {
 				const text = candidate.innerText || '';
 				const stripped = text.replace(/\s+/g, '');
+				if (tabBarTexts.some(t => stripped === t)) { candidate = candidate.parentElement; continue; }
 
-				// 跳过 tab 栏
-				if (tabBarTexts.some(t => stripped === t)) {
-					candidate = candidate.parentElement;
-					continue;
-				}
-
-				// 如果这个元素包含时间信息（"天前"、"小时前"、"分钟前"、"昨天"等）
-				// 并且包含操作信息（"评论了你的笔记"、"回复了你的评论"、"@了你"）
-				// 那它很可能是一个完整的通知条目
 				const hasTimeInfo = /(\d+天前|\d+小时前|\d+分钟前|昨天|前天|刚刚|\d{1,2}:\d{2})/.test(text);
 				const hasAction = /(评论了你的笔记|回复了你的评论|@了你|在评论中@了你|提到了你)/.test(text);
+				if (hasTimeInfo && hasAction) { bestCandidate = candidate; break; }
 
-				if (hasTimeInfo && hasAction) {
-					bestCandidate = candidate;
-					break;
-				}
-
-				// 如果当前元素的兄弟元素也包含用户链接，说明当前层级太高（包含了多条通知）
 				if (candidate.parentElement) {
 					const siblings = candidate.parentElement.children;
 					let siblingsWithUserLinks = 0;
 					for (const sib of siblings) {
-						if (sib !== candidate && sib.querySelector && sib.querySelector('a[href*="/user/profile/"]')) {
-							siblingsWithUserLinks++;
-						}
+						if (sib !== candidate && sib.querySelector && sib.querySelector('a[href*="/user/profile/"]')) siblingsWithUserLinks++;
 					}
-					if (siblingsWithUserLinks > 0 && bestCandidate === null) {
-						bestCandidate = candidate;
-						break;
-					}
+					if (siblingsWithUserLinks > 0 && bestCandidate === null) { bestCandidate = candidate; break; }
 				}
-
 				candidate = candidate.parentElement;
 			}
 
 			if (!bestCandidate) continue;
-
-			// 用元素引用去重
-			const itemKey = bestCandidate.innerHTML.substring(0, 100);
-			if (seenItems.has(itemKey)) continue;
-			seenItems.add(itemKey);
-
 			const text = bestCandidate.innerText || '';
 			const stripped = text.replace(/\s+/g, '');
-
-			// 再次过滤 tab 栏
 			if (tabBarTexts.some(t => stripped === t)) continue;
 			if (text.trim().length < 10) continue;
 
-			// 提取用户名和 ID
+			// 提取 user_id（从用户链接的 href）
 			const firstLink = bestCandidate.querySelector('a[href*="/user/profile/"]');
-			let username = '';
 			let userId = '';
 			if (firstLink) {
-				username = firstLink.innerText.trim();
 				const m = firstLink.href.match(/\/user\/profile\/([^?/]+)/);
 				if (m) userId = m[1];
 			}
 
-			// 判断操作类型
+			// 提取用户名：从通知文本第一行获取（头像链接没有文字）
+			let username = '';
+			const lines = text.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+			if (lines.length > 0) username = lines[0];
+
 			let action = '';
 			if (text.includes('评论了你的笔记')) action = '评论了你的笔记';
 			else if (text.includes('回复了你的评论')) action = '回复了你的评论';
 			else if (text.includes('@了你') || text.includes('在评论中@了你') || text.includes('提到了你')) action = '在评论中@了你';
 
-			// 提取时间
 			let time = '';
 			const timeMatch = text.match(/(\d+天前|\d+小时前|\d+分钟前|昨天 \d{1,2}:\d{2}|前天 \d{1,2}:\d{2}|刚刚|\d{1,2}:\d{2})/);
 			if (timeMatch) time = timeMatch[1];
 
-			// 提取评论内容（去掉用户名和操作描述后的部分）
 			let content = text.trim();
 			if (content.length > 300) content = content.substring(0, 300) + '...';
 
-			comments.push({
-				index: comments.length,
-				username: username,
-				user_id: userId,
-				action: action,
-				content: content,
-				time: time,
-				note_title: '',
-				note_snippet: ''
-			});
+			raw.push({ username, user_id: userId, action, content, time, note_title: '', note_snippet: '' });
+		}
+
+		// 后处理去重：同一通知的头像链接和文字链接会生成两条 user_id+content 相同的记录
+		const seen = new Set();
+		const comments = [];
+		for (const item of raw) {
+			const key = item.user_id + '|' + item.content.substring(0, 100);
+			if (seen.has(key)) continue;
+			seen.add(key);
+			// 优先保留有 username 的版本（文字链接那条）
+			item.index = comments.length;
+			comments.push(item);
 		}
 
 		return JSON.stringify(comments);
@@ -323,15 +307,13 @@ func clickReplyButton(page *rod.Page, index int) error {
 	result, err := page.Eval(fmt.Sprintf(`() => {
 		const tabBarTexts = ['评论和@赞和收藏新增关注', '评论和@', '赞和收藏', '新增关注'];
 
-		// 与 extractCommentsViaJS 一致的定位逻辑
 		const userLinks = document.querySelectorAll('a[href*="/user/profile/"]');
 		if (userLinks.length === 0) {
 			return JSON.stringify({ clicked: false, error: "no user links found on page" });
 		}
 
-		const seenItems = new Set();
-		const notificationItems = [];
-
+		// 自底向上找所有通知条目（含重复）
+		const rawItems = [];
 		for (const link of userLinks) {
 			let candidate = link.parentElement;
 			let bestCandidate = null;
@@ -343,7 +325,6 @@ func clickReplyButton(page *rod.Page, index int) error {
 
 				const hasTimeInfo = /(\d+天前|\d+小时前|\d+分钟前|昨天|前天|刚刚|\d{1,2}:\d{2})/.test(text);
 				const hasAction = /(评论了你的笔记|回复了你的评论|@了你|在评论中@了你|提到了你)/.test(text);
-
 				if (hasTimeInfo && hasAction) { bestCandidate = candidate; break; }
 
 				if (candidate.parentElement) {
@@ -358,16 +339,28 @@ func clickReplyButton(page *rod.Page, index int) error {
 			}
 
 			if (!bestCandidate) continue;
-			const itemKey = bestCandidate.innerHTML.substring(0, 100);
-			if (seenItems.has(itemKey)) continue;
-			seenItems.add(itemKey);
-
 			const text = bestCandidate.innerText || '';
 			const stripped = text.replace(/\s+/g, '');
 			if (tabBarTexts.some(t => stripped === t)) continue;
 			if (text.trim().length < 10) continue;
 
-			notificationItems.push(bestCandidate);
+			const firstLink = bestCandidate.querySelector('a[href*="/user/profile/"]');
+			let userId = '';
+			if (firstLink) {
+				const m = firstLink.href.match(/\/user\/profile\/([^?/]+)/);
+				if (m) userId = m[1];
+			}
+			const content = (text.trim()).substring(0, 100);
+			rawItems.push({ el: bestCandidate, key: userId + '|' + content });
+		}
+
+		// 按 user_id+content 去重，保留每组第一个 DOM 元素
+		const seen = new Set();
+		const notificationItems = [];
+		for (const item of rawItems) {
+			if (seen.has(item.key)) continue;
+			seen.add(item.key);
+			notificationItems.push(item.el);
 		}
 
 		const idx = %d;
@@ -420,20 +413,16 @@ func inputReplyContent(page *rod.Page, content string) error {
 		elem, err := page.Timeout(3 * time.Second).Element(sel)
 		if err == nil && elem != nil {
 			logrus.Infof("找到回复输入框: %s", sel)
+			// 聚焦
 			if err := elem.Click(proto.InputMouseButtonLeft, 1); err != nil {
 				logrus.Warnf("点击输入框失败: %v", err)
 			}
+			elem.Eval(`function() { this.focus() }`)
 			humanSleep(300 * time.Millisecond)
-			if err := elem.Input(content); err != nil {
-				logrus.Warnf("直接 Input 失败: %v，尝试 JS 方式", err)
-				// 用 JS 方式注入文本
-				_, jsErr := elem.Eval(fmt.Sprintf(`(el) => {
-					el.innerText = %q;
-					el.dispatchEvent(new InputEvent('input', { bubbles: true }));
-				}`, content))
-				if jsErr != nil {
-					return fmt.Errorf("输入回复内容失败: %w", jsErr)
-				}
+
+			// 用 CDP InsertText 输入（elem.Input 在 textarea 卡死，JS 设值不触发框架状态更新）
+			if err := page.InsertText(content); err != nil {
+				return fmt.Errorf("输入回复内容失败: %w", err)
 			}
 			logrus.Info("回复内容输入成功")
 			return nil

@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/go-rod/rod"
-	"github.com/go-rod/rod/lib/proto"
 	"github.com/sirupsen/logrus"
 )
 
@@ -23,20 +22,15 @@ func NewCommentFeedAction(page *rod.Page) *CommentFeedAction {
 // PostComment 发表评论到 Feed
 func (f *CommentFeedAction) PostComment(ctx context.Context, feedID, xsecToken, content string) error {
 	// 不使用 Context(ctx)，避免继承外部 context 的超时
-	page := f.page.Timeout(60 * time.Second)
+	page := f.page.Timeout(90 * time.Second)
 
-	url := makeFeedDetailURL(feedID, xsecToken)
-	logrus.Infof("打开 feed 详情页: %s", url)
+	logrus.Infof("评论帖子: feedID=%s", feedID)
 
-	// 导航到详情页
-	page.MustNavigate(url)
-	page.MustWaitDOMStable()
-	time.Sleep(1 * time.Second)
-
-	// 检测页面是否可访问
-	if err := checkPageAccessible(page); err != nil {
+	// 从 explore 页自然导航到详情页（含浏览停留 + checkPageAccessible）
+	if err := navigateToFeedDetail(page, feedID, xsecToken); err != nil {
 		return err
 	}
+	defer closeDetailAndReturn(f.page)
 
 	elem, err := page.Element("div.input-box div.content-edit span")
 	if err != nil {
@@ -44,10 +38,13 @@ func (f *CommentFeedAction) PostComment(ctx context.Context, feedID, xsecToken, 
 		return fmt.Errorf("未找到评论输入框，该帖子可能不支持评论或网页端不可访问: %w", err)
 	}
 
-	if err := elem.Click(proto.InputMouseButtonLeft, 1); err != nil {
+	if err := humanClick(page, elem); err != nil {
 		logrus.Warnf("Failed to click comment input box: %v", err)
 		return fmt.Errorf("无法点击评论输入框: %w", err)
 	}
+
+	// 聚焦后短暂停顿，模拟用户思考
+	humanSleepRange(400, 900)
 
 	elem2, err := page.Element("div.input-box div.content-edit p.content-input")
 	if err != nil {
@@ -55,12 +52,14 @@ func (f *CommentFeedAction) PostComment(ctx context.Context, feedID, xsecToken, 
 		return fmt.Errorf("未找到评论输入区域: %w", err)
 	}
 
-	if err := elem2.Input(content); err != nil {
+	// 逐字符输入，模拟人类打字节奏（替代一次性 Input）
+	if err := humanType(elem2, content); err != nil {
 		logrus.Warnf("Failed to input comment content: %v", err)
 		return fmt.Errorf("无法输入评论内容: %w", err)
 	}
 
-	time.Sleep(1 * time.Second)
+	// 提交前"检查一下"的停顿
+	humanSleepRange(1200, 2800)
 
 	submitButton, err := page.Element("div.bottom button.submit")
 	if err != nil {
@@ -68,12 +67,13 @@ func (f *CommentFeedAction) PostComment(ctx context.Context, feedID, xsecToken, 
 		return fmt.Errorf("未找到提交按钮: %w", err)
 	}
 
-	if err := submitButton.Click(proto.InputMouseButtonLeft, 1); err != nil {
+	// 模态框内的按钮用 JS click（humanClick 的 CDP 鼠标事件会被浮层拦截）
+	if _, err := submitButton.Eval(`() => this.click()`); err != nil {
 		logrus.Warnf("Failed to click submit button: %v", err)
 		return fmt.Errorf("无法点击提交按钮: %w", err)
 	}
 
-	time.Sleep(1 * time.Second)
+	humanSleepRange(800, 1600)
 
 	logrus.Infof("Comment posted successfully to feed: %s", feedID)
 	return nil
@@ -84,23 +84,15 @@ func (f *CommentFeedAction) ReplyToComment(ctx context.Context, feedID, xsecToke
 	// 增加超时时间，因为需要滚动查找评论
 	// 注意：不使用 Context(ctx)，避免继承外部 context 的超时
 	page := f.page.Timeout(5 * time.Minute)
-	url := makeFeedDetailURL(feedID, xsecToken)
-	logrus.Infof("打开 feed 详情页进行回复: %s", url)
+	logrus.Infof("回复评论: feedID=%s", feedID)
 
-	// 导航到详情页
-	page.MustNavigate(url)
-	page.MustWaitDOMStable()
-	time.Sleep(1 * time.Second)
-
-	// 检测页面是否可访问
-	if err := checkPageAccessible(page); err != nil {
+	// 从 explore 页自然导航到详情页（含浏览停留 + checkPageAccessible）
+	if err := navigateToFeedDetail(page, feedID, xsecToken); err != nil {
 		return err
 	}
+	defer closeDetailAndReturn(f.page)
 
-	// 等待评论容器加载
-	time.Sleep(2 * time.Second)
-
-	// 使用 Go 实现的查找逻辑
+	// 使用 Go 实现的查找逻辑（内部已含滚动节奏）
 	commentEl, err := findCommentElement(page, commentID, userID)
 	if err != nil {
 		return fmt.Errorf("无法找到评论: %w", err)
@@ -109,7 +101,7 @@ func (f *CommentFeedAction) ReplyToComment(ctx context.Context, feedID, xsecToke
 	// 滚动到评论位置
 	logrus.Info("滚动到评论位置...")
 	commentEl.MustScrollIntoView()
-	time.Sleep(1 * time.Second)
+	humanSleepRange(800, 1500)
 
 	logrus.Info("准备点击回复按钮")
 
@@ -119,11 +111,11 @@ func (f *CommentFeedAction) ReplyToComment(ctx context.Context, feedID, xsecToke
 		return fmt.Errorf("无法找到回复按钮: %w", err)
 	}
 
-	if err := replyBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
+	if err := humanClick(page, replyBtn); err != nil {
 		return fmt.Errorf("点击回复按钮失败: %w", err)
 	}
 
-	time.Sleep(1 * time.Second)
+	humanSleepRange(600, 1200)
 
 	// 查找回复输入框
 	inputEl, err := page.Element("div.input-box div.content-edit p.content-input")
@@ -131,24 +123,24 @@ func (f *CommentFeedAction) ReplyToComment(ctx context.Context, feedID, xsecToke
 		return fmt.Errorf("无法找到回复输入框: %w", err)
 	}
 
-	// 输入内容
-	if err := inputEl.Input(content); err != nil {
+	// 逐字符输入回复内容
+	if err := humanType(inputEl, content); err != nil {
 		return fmt.Errorf("输入回复内容失败: %w", err)
 	}
 
-	time.Sleep(500 * time.Millisecond)
+	humanSleepRange(1000, 2200)
 
-	// 查找并点击提交按钮
+	// 查找并点击提交按钮（模态框内用 JS click）
 	submitBtn, err := page.Element("div.bottom button.submit")
 	if err != nil {
 		return fmt.Errorf("无法找到提交按钮: %w", err)
 	}
 
-	if err := submitBtn.Click(proto.InputMouseButtonLeft, 1); err != nil {
+	if _, err := submitBtn.Eval(`() => this.click()`); err != nil {
 		return fmt.Errorf("点击提交按钮失败: %w", err)
 	}
 
-	time.Sleep(2 * time.Second)
+	humanSleepRange(1500, 2500)
 	logrus.Infof("回复评论成功")
 	return nil
 }
